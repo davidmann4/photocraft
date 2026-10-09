@@ -315,6 +315,14 @@ pub fn turns_at(app: &PhotocraftApp, p: [f64; 2]) -> bool {
         && app.ui.crop_rect.filter(|r| r.iter().all(|v| v.is_finite())).is_some_and(|r| hit_turned(r, angle(app), p, tolerance(app)) == Hit::Outside)
 }
 
+/// A double-click at document point `p` commits the crop (Photoshop: double-click inside the box,
+/// like ↵): Crop tool, a pending frame, and `p` inside it (not on a handle, not outside).
+pub fn commits_at(app: &PhotocraftApp, p: [f64; 2]) -> bool {
+    app.ui.tool == Tool::Crop
+        && app.crop.drag.is_none()
+        && app.ui.crop_rect.filter(|r| r.iter().all(|v| v.is_finite())).is_some_and(|r| hit_turned(r, angle(app), p, tolerance(app)) == Hit::Inside)
+}
+
 /// The frame is being turned: its angle, for the readout beside the pointer.
 pub fn turning(app: &PhotocraftApp) -> Option<f64> {
     matches!(app.crop.drag, Some(CropDrag::Rotate { .. })).then(|| angle(app))
@@ -925,6 +933,27 @@ mod tests {
         assert!(turn_cursor_dir(&app, [f64::NAN, 0.0]).is_none());
         app.ui.tool = Tool::Brush;
         assert_eq!(turn_cursor_dir(&app, [0.0, 0.0]), None);
+    }
+
+    /// A double-click inside the frame commits it, as ↵ does; on a handle or outside it doesn't.
+    #[test]
+    fn double_click_inside_the_frame_commits() {
+        let mut app = app(SampleType::U8);
+        app.ui.crop_rect = Some([20.0, 20.0, 100.0, 60.0]);
+        assert!(commits_at(&app, [60.0, 40.0]));
+        assert!(!commits_at(&app, [20.0, 20.0]), "on a handle");
+        assert!(!commits_at(&app, [150.0, 40.0]), "outside: that turns the frame");
+        app.ui.crop_angle = 30.0;
+        assert!(commits_at(&app, [60.0, 40.0]), "inside a turned frame");
+        assert!(!commits_at(&app, [25.0, 22.0]), "inside the upright frame but outside the turned one");
+        app.ui.crop_angle = 0.0;
+        app.ui.crop_rect = None;
+        assert!(!commits_at(&app, [60.0, 40.0]), "no frame");
+        app.ui.crop_rect = Some([f64::NAN, 0.0, 1.0, 1.0]);
+        assert!(!commits_at(&app, [0.5, 0.5]));
+        app.ui.crop_rect = Some([20.0, 20.0, 100.0, 60.0]);
+        app.ui.tool = Tool::Brush;
+        assert!(!commits_at(&app, [60.0, 40.0]));
     }
 
     #[test]
