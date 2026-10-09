@@ -102,7 +102,9 @@ fn add_abr_presets(s: &mut Session, p: &Value, group: String, imp: photocraft_io
         && let Some(first) = names.first()
         && let Some(pr) = photocraft_paint::presets::find(&s.tools.presets, first)
     {
-        s.tools.brush = pr.brush.clone().picked_over(&s.tools.brush);
+        let mut b = pr.brush.clone().picked_over(&s.tools.brush);
+        s.load_brush_tips(&mut b).map_err(|e| bad("brush.presets.importAbr", e))?;
+        s.tools.brush = b;
     }
     Ok(json!({ "group": group, "imported": names, "count": names.len(), "version": imp.version, "warnings": imp.warnings }))
 }
