@@ -1402,6 +1402,9 @@
 	Stroke	描边
 	Stroke Catch-up	笔触跟随
 	Stroke:	描边：
+	Location	位置
+	Location:	位置：
+	Preserve Transparency	保留透明区域
 	Style	样式
 	Style Options	样式选项
 	Style Options…	样式选项…
