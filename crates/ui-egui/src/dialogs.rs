@@ -143,7 +143,9 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             }
             let label = egui::Label::new(egui::RichText::new(&title).font(crate::theme::semibold(15.0))).selectable(false);
             let t = if crate::color_picker_ui::owns(&fields) { ui.add_sized(egui::vec2(ui.available_width(), 22.0), label).rect } else { ui.add(label).rect };
-            let bar = egui::Rect::from_min_max(t.min, egui::pos2(ui.max_rect().right(), t.bottom()));
+            // The whole title band drags (#1921): the full width plus a little of the popup's
+            // padding around it and the gap above the hairline, but none of the controls below.
+            let bar = egui::Rect::from_min_max(t.min - egui::vec2(7.0, 7.0), egui::pos2(ui.max_rect().right() + 7.0, t.bottom() + 4.0));
             drag = ui.interact(bar, id.with("title"), egui::Sense::drag()).drag_delta();
             ui.add_space(4.0);
             crate::widgets::hairline(ui);
@@ -513,6 +515,39 @@ mod tests {
             h.hover_at(margin);
             h.run_steps(1);
             assert!(free_pointer_over(&h.ctx, egui::Rect::from_min_size(egui::Pos2::ZERO, size)).is_none());
+        }
+    }
+
+    #[test]
+    fn layer_style_title_gutters_can_start_drags() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        for point in 0..5 {
+            let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(|ui, app| show(app, ui.ctx()), app);
+            PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+            h.state_mut().ui.open_dialog(DialogKind::LayerStyle, serde_json::Map::new());
+            h.run_steps(3);
+            let before = h.get_by_label("Layer Style").rect();
+            let from = match point {
+                0 => egui::pos2(before.left() - 5.0, before.bottom() - 4.0),
+                1 => egui::pos2(before.right() + 5.0, before.bottom() - 4.0),
+                2 => egui::pos2(before.center().x, before.bottom() + 3.0),
+                3 => egui::pos2(before.center().x, before.top() - 5.0),
+                _ => egui::pos2(before.center().x, before.bottom() - 3.0),
+            };
+            h.hover_at(from);
+            h.drag_at(from);
+            h.run_steps(2);
+            for i in 1..=8 {
+                h.hover_at(from + egui::vec2(64.0, -32.0) * (i as f32 / 8.0));
+                h.run_steps(1);
+            }
+            h.drop_at(from + egui::vec2(64.0, -32.0));
+            h.run_steps(3);
+            let delta = h.get_by_label("Layer Style").rect().min - before.min;
+            assert!((delta - egui::vec2(64.0, -32.0)).length() < 2.0, "point {point}: moved {delta:?}");
+            assert_eq!(h.state().ui.dialogs.len(), 1);
         }
     }
 

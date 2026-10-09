@@ -812,6 +812,9 @@ pub struct UiState {
     /// Free Transform session, if any.
     #[serde(default)]
     pub transform: Option<TransformSession>,
+    /// Temporary symmetry-axis editing, exposed to automation but never restored from settings.
+    #[serde(default, skip_deserializing)]
+    pub symmetry_transform: Option<crate::symmetry_ui::Transform>,
     /// Clone Stamp / Healing source point (⌥-click) and the aligned offset once a stroke started.
     #[serde(default)]
     pub clone_source: Option<[f64; 2]>,
@@ -966,6 +969,7 @@ impl Default for UiState {
             type_transform: None,
             type_transform_pivot: None,
             transform: None,
+            symmetry_transform: None,
             mask_target: false,
             vector_mask_target: false,
             brush_picker: None,

@@ -54,6 +54,8 @@ pub struct CropState {
     frame_for: Option<(usize, u32, u32)>,
     /// The frame is being edited (pressed since it was made): the canvas shows what lies past it.
     pub editing: bool,
+    /// The document the pending frame (or gesture) belongs to ([`cancel_stale`], #1918).
+    doc: Option<photocraft_doc::DocId>,
 }
 
 /// A crop gesture in progress. Rects are `[x0, y0, x1, y1]` in document coordinates.
@@ -283,11 +285,87 @@ pub fn ensure_frame(app: &mut PhotocraftApp) {
     app.crop.default_frame = true;
     app.crop.frame_for = key;
     app.crop.editing = false;
+    claim(app);
 }
 
 /// A crop gesture is in progress: Space repositions the frame rather than panning.
 pub fn active(app: &PhotocraftApp) -> bool {
     app.ui.tool == Tool::Crop && app.crop.drag.is_some()
+}
+
+/// Cancel the pending crop: the frame, any gesture on it and the default-frame state. With the
+/// Crop tool still picked, [`ensure_frame`] then makes the active document a new default frame.
+pub fn cancel(app: &mut PhotocraftApp) {
+    app.ui.crop_rect = None;
+    app.ui.crop_angle = 0.0;
+    app.crop.drag = None;
+    app.crop.default_frame = false;
+    app.crop.frame_for = None;
+    app.crop.editing = false;
+}
+
+/// The pending frame belongs to the active document.
+fn claim(app: &mut PhotocraftApp) {
+    app.crop.doc = app.session.active().map(|st| st.doc.id);
+}
+
+/// A crop is pending: the Crop tool's frame on the active document has been set (drawn, moved,
+/// resized or turned), not just the untouched default frame the tool shows.
+pub fn pending(app: &PhotocraftApp) -> bool {
+    app.ui.tool == Tool::Crop
+        && app.ui.crop_rect.is_some()
+        && !app.crop.default_frame
+        && (app.crop.doc.is_none() || app.crop.doc == app.session.active().map(|st| st.doc.id))
+}
+
+/// Menu commands Photoshop greys out while a crop is pending (#1918), until it is committed or
+/// cancelled. Checked item by item in Photoshop 27.11: everything except Close, Save, Save As,
+/// Save a Copy; Undo, Redo, Toggle Last State, Search; Image › Crop (which commits the frame); the
+/// View menu but Proof Setup, Pixel Aspect Ratio (Correction), 32-bit Preview Options, Flip
+/// Horizontal and Screen Mode; the Window menu but Workspace and Adjustments; Help but System Info.
+pub fn blocks(app: &PhotocraftApp, id: &str) -> bool {
+    pending(app) && !available_while_pending(id)
+}
+
+fn available_while_pending(id: &str) -> bool {
+    if let Some(v) = id.strip_prefix("view.") {
+        let greyed = ["proofSetup.", "pixelAspectRatio", "thirtyTwoBitPreviewOptions", "flipHorizontal", "screenMode."];
+        return !greyed.iter().any(|g| v.starts_with(g));
+    }
+    if let Some(w) = id.strip_prefix("window.") {
+        return !(w.starts_with("workspace.") || w == "panel.adjustments");
+    }
+    if id.starts_with("help.") {
+        return id != "help.systemInfo";
+    }
+    matches!(
+        id,
+        "file.close"
+            | "file.save"
+            | "file.saveAs"
+            | "file.saveACopy"
+            | "file.exit"
+            | "edit.undo"
+            | "edit.redo"
+            | "edit.toggleLastState"
+            | "edit.search"
+            | "image.crop"
+    )
+}
+
+/// A pending crop belongs to the document it was drawn on (#1918): when another document becomes
+/// active (File › New, Open, a tab switch, closing the document) it is cancelled, so it never
+/// shows on or crops another document. (As in Photoshop: switching to another document discards
+/// the pending crop, and that document gets the tool's own frame.) Run on every frame and command
+/// (`sync_views`) and before a commit.
+pub fn cancel_stale(app: &mut PhotocraftApp) {
+    let active = app.session.active().map(|st| st.doc.id);
+    let pending = app.ui.crop_rect.is_some() || app.crop.drag.is_some();
+    // A frame made before any document was claimed (control channel, tests) is the active one's.
+    if pending && app.crop.doc.is_some() && app.crop.doc != active {
+        cancel(app);
+    }
+    app.crop.doc = active;
 }
 
 /// The frame is being edited, so the canvas shows the pixels past its edges (Photoshop's crop
@@ -439,6 +517,7 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
     }
     match ev {
         ToolEvent::Down { .. } => {
+            claim(app);
             app.crop.editing = true;
             let frame = app.ui.crop_rect.filter(|r| r.iter().all(|v| v.is_finite()));
             let deg = angle(app);
@@ -975,6 +1054,199 @@ mod tests {
         assert_eq!(st.ui.crop_rect, Some(moved));
         assert_eq!(st.ui.views[0].center, view.center, "the view did not pan");
         assert!(st.crop.drag.is_none());
+    }
+
+    /// #1918: a pending crop belongs to the document it was drawn on. File › New, opening a file
+    /// or switching tabs cancels it; it never shows on, or crops, another document.
+    /// A turned pending frame is dropped with its angle when another document becomes active, and
+    /// Esc drops both too, so the next frame starts upright.
+    #[test]
+    fn cancelling_a_turned_crop_resets_its_angle() {
+        let mut app = app(SampleType::U8);
+        drag(&mut app, &[[10.0, 10.0], [50.0, 40.0]], NONE);
+        app.ui.crop_angle = 30.0;
+        app.run("file.new", json!({"width": 300, "height": 150})).unwrap();
+        app.sync_views();
+        assert_eq!(app.ui.crop_angle, 0.0);
+        drag(&mut app, &[[10.0, 10.0], [50.0, 40.0]], NONE);
+        app.ui.crop_angle = -12.5;
+        cancel(&mut app);
+        assert_eq!((app.ui.crop_rect, app.ui.crop_angle, app.crop.drag), (None, 0.0, None));
+    }
+
+    #[test]
+    fn a_pending_crop_stays_with_its_document() {
+        let size = |app: &PhotocraftApp| app.session.active().map(|st| st.doc.size);
+        // File › New.
+        let mut app = app(SampleType::U8);
+        drag(&mut app, &[[10.0, 10.0], [50.0, 40.0]], NONE);
+        assert_eq!(app.ui.crop_rect, Some([10.0, 10.0, 50.0, 40.0]));
+        app.run("file.new", json!({"width": 300, "height": 150})).unwrap();
+        assert_eq!(app.ui.crop_rect, None, "the first document's frame is gone");
+        assert!(app.crop.drag.is_none() && !app.crop.editing && !app.crop.default_frame);
+        crate::canvas::commit_crop(&mut app);
+        assert_eq!(size(&app), Some(Size::new(300, 150)), "↵ crops nothing");
+        // The new document gets its own default frame.
+        ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 300.0, 150.0]));
+        assert!(app.crop.default_frame);
+        // Switching tabs (outside a command), even before the next frame's sync: ↵ never crops
+        // the other document.
+        drag(&mut app, &[[20.0, 20.0], [60.0, 60.0]], NONE);
+        assert!(app.session.set_active(0));
+        crate::canvas::commit_crop(&mut app);
+        assert_eq!(size(&app), Some(Size::new(200, 100)));
+        assert_eq!(app.session.documents()[1].doc.size, Size::new(300, 150));
+        assert_eq!(app.ui.crop_rect, None);
+        // The next frame's sync also drops a frame left on a tab switched away from.
+        drag(&mut app, &[[20.0, 20.0], [60.0, 60.0]], NONE);
+        assert!(app.session.set_active(1));
+        app.sync_views();
+        assert_eq!(app.ui.crop_rect, None);
+        // Closing another document keeps the pending crop; closing its own cancels it.
+        drag(&mut app, &[[20.0, 20.0], [60.0, 60.0]], NONE);
+        app.session.close(0);
+        app.sync_views();
+        assert_eq!(app.ui.crop_rect, Some([20.0, 20.0, 60.0, 60.0]), "still its document");
+        crate::canvas::commit_crop(&mut app);
+        assert_eq!(size(&app), Some(Size::new(40, 40)));
+        drag(&mut app, &[[5.0, 5.0], [25.0, 25.0]], NONE);
+        app.session.close(0);
+        app.sync_views();
+        assert!(app.session.active().is_none());
+        assert_eq!(app.ui.crop_rect, None);
+        assert!(app.crop.drag.is_none());
+        crate::canvas::commit_crop(&mut app);
+        ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, None, "no document, no frame");
+    }
+
+    /// A drag in progress when its document goes away is dropped too, not finished elsewhere.
+    #[test]
+    fn a_crop_drag_ends_with_its_document() {
+        let mut app = app(SampleType::U8);
+        tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 10.0, pressure: 1.0 }, NONE);
+        tool_event(&mut app, ToolEvent::Move { x: 50.0, y: 40.0, pressure: 1.0 }, NONE);
+        app.run("file.new", json!({"width": 300, "height": 150})).unwrap();
+        tool_event(&mut app, ToolEvent::Up { x: 60.0, y: 50.0 }, NONE);
+        assert_eq!(app.ui.crop_rect, None);
+        crate::canvas::commit_crop(&mut app);
+        assert_eq!(app.session.active().map(|st| st.doc.size), Some(Size::new(300, 150)));
+    }
+
+    /// #1918: as in Photoshop, a pending crop (not the untouched default frame) greys almost every
+    /// menu command; the ones Photoshop keeps stay available, and commit or cancel frees the rest.
+    /// Walks the whole menu catalog.
+    #[test]
+    fn a_pending_crop_greys_the_menus_photoshop_greys() {
+        let mut app = app(SampleType::U8);
+        ensure_frame(&mut app);
+        assert!(app.crop.default_frame);
+        let ids: Vec<&str> = crate::menu_catalog::CATALOG.iter().map(|e| e.3).filter(|id| *id != "---").collect();
+        for id in &ids {
+            assert!(!blocks(&app, id), "default frame: {id} stays as it was");
+        }
+        drag(&mut app, &[[10.0, 10.0], [50.0, 40.0]], NONE);
+        assert!(pending(&app));
+        let kept = [
+            "file.close",
+            "file.save",
+            "file.saveAs",
+            "file.saveACopy",
+            "edit.undo",
+            "edit.redo",
+            "edit.toggleLastState",
+            "edit.search",
+            "image.crop",
+            "view.proofColors",
+            "view.gamutWarning",
+            "view.zoomIn",
+            "view.zoomOut",
+            "view.fitOnScreen",
+            "view.actualPixels",
+            "view.twoHundredPercent",
+            "view.printSize",
+            "view.extras",
+            "view.show.grid",
+            "view.rulers",
+            "view.snap",
+            "view.snapTo.guides",
+            "view.lockSlices",
+            "view.newGuide",
+            "window.arrange.tile",
+            "window.panel.layers",
+            "help.about",
+        ];
+        let greyed = [
+            "file.new",
+            "file.open",
+            "file.openAs",
+            "file.closeAll",
+            "file.revert",
+            "file.export.exportAs",
+            "file.placeEmbedded",
+            "file.automate.batch",
+            "file.scripts.browse",
+            "file.import.notes",
+            "file.fileInfo",
+            "file.print",
+            "edit.cut",
+            "edit.fill",
+            "edit.freeTransform",
+            "edit.colorSettings",
+            "edit.preferences.general",
+            "image.imageSize",
+            "image.mode.grayscale",
+            "layer.new.layer",
+            "select.all",
+            "filter.blur.gaussianBlur",
+            "view.proofSetup.workingCmyk",
+            "view.pixelAspectRatio.square",
+            "view.pixelAspectRatioCorrection",
+            "view.thirtyTwoBitPreviewOptions",
+            "view.flipHorizontal",
+            "view.screenMode.fullScreen",
+            "window.workspace.essentials",
+            "window.panel.adjustments",
+            "help.systemInfo",
+        ];
+        for id in kept {
+            assert!(!blocks(&app, id), "{id} stays available");
+        }
+        for id in greyed {
+            assert!(blocks(&app, id), "{id} is greyed");
+            assert!(!crate::menus::is_enabled(&app, id), "{id} greyed in the menus");
+            assert!(!crate::menus::modal_allows(&app, id), "{id} refused over the menu gate");
+        }
+        assert!(
+            ids.iter()
+                .filter(|id| id.starts_with("layer.") || id.starts_with("type.") || id.starts_with("select.") || id.starts_with("filter."))
+                .all(|id| blocks(&app, id))
+        );
+        // Committing still runs `image.crop` itself, and frees the menus again.
+        crate::canvas::commit_crop(&mut app);
+        assert_eq!(app.session.active().unwrap().doc.size, Size::new(40, 30));
+        assert!(!pending(&app) && crate::menus::is_enabled(&app, "file.new"));
+        // Cancelling does too.
+        drag(&mut app, &[[5.0, 5.0], [20.0, 20.0]], NONE);
+        assert!(blocks(&app, "file.new"));
+        cancel(&mut app);
+        assert!(!blocks(&app, "file.new"));
+        // Another tool: nothing is pending.
+        drag(&mut app, &[[5.0, 5.0], [20.0, 20.0]], NONE);
+        app.ui.tool = Tool::Brush;
+        assert!(!blocks(&app, "file.new"));
+    }
+
+    /// Image › Crop with a pending crop commits the frame (the one Image item Photoshop keeps).
+    #[test]
+    fn image_crop_menu_commits_a_pending_crop() {
+        let mut app = app(SampleType::U8);
+        drag(&mut app, &[[10.0, 10.0], [50.0, 40.0]], NONE);
+        let ctx = egui::Context::default();
+        crate::menus::invoke(&mut app, &ctx, "image.crop", json!({})).unwrap();
+        assert_eq!(app.session.active().unwrap().doc.size, Size::new(40, 30));
+        assert!(app.ui.crop_rect.is_none() || app.crop.default_frame);
     }
 
     #[test]

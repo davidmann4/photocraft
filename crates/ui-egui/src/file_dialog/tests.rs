@@ -88,6 +88,29 @@ fn the_app_keeps_running_while_a_dialog_is_open() {
     assert!(!app.file_dialog_open());
 }
 
+/// Preferences ▸ File Handling ▸ Lowercase Extension (default on): the chosen path's extension
+/// is lowercased on the way to the writer; unchecked, the user's spelling is kept.
+#[test]
+fn save_paths_get_a_lowercase_extension_when_the_preference_is_on() {
+    let ctx = egui::Context::default();
+    {
+        let (mut app, open, written) = app();
+        menus::invoke(&mut app, &ctx, "file.saveAs", json!({})).unwrap();
+        app.poll_file_dialog(&ctx, None);
+        answer(&open, Some(FileDialogAnswer::SaveTo("/pics/CAT.PSD".into())));
+        app.poll_file_dialog(&ctx, None);
+        assert_eq!(*written.borrow(), ["/pics/CAT.psd"], "only the extension is lowercased");
+        assert_eq!(app.session.active().unwrap().path.as_deref(), Some("/pics/CAT.psd"));
+    }
+    let (mut app, open, written) = app();
+    app.run("prefs.set", json!({"path": "fileHandling.lowercaseExtension", "value": false})).unwrap();
+    menus::invoke(&mut app, &ctx, "file.saveAs", json!({})).unwrap();
+    app.poll_file_dialog(&ctx, None);
+    answer(&open, Some(FileDialogAnswer::SaveTo("/pics/CAT.PSD".into())));
+    app.poll_file_dialog(&ctx, None);
+    assert_eq!(*written.borrow(), ["/pics/CAT.PSD"], "off keeps the user's spelling");
+}
+
 #[test]
 fn save_and_export_dialogs_start_beside_the_document() {
     let (mut app, open, _) = app();

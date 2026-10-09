@@ -252,6 +252,11 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if crate::menu_nav::is_open(ctx) {
         return;
     }
+    let symmetry_editing = app.ui.symmetry_transform.is_some();
+    crate::symmetry_ui::track(app, ctx);
+    if symmetry_editing && (app.ui.symmetry_transform.is_none() || egui::Popup::is_any_open(ctx)) {
+        return;
+    }
     // Liquify is a full-window custom dialog with focusable sliders. egui can therefore claim
     // keyboard input before the distortion-mode handler below runs. Give Liquify's local
     // shortcuts first refusal (Undo, brush size, tool keys), but never steal keys from text edits.
@@ -393,9 +398,7 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if pressed(Key::Escape) {
             app.ui.polygon.clear();
             app.ui.polygon_mode.clear();
-            app.ui.crop_rect = None;
-            app.ui.crop_angle = 0.0;
-            app.crop.drag = None;
+            crate::crop_ui::cancel(app);
             return;
         }
     }

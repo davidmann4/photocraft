@@ -1100,9 +1100,10 @@ fn gpu_budget(app: &mut PhotocraftApp, gpu: &crate::gpu_canvas::GpuCanvas, idx: 
     app.perf.gpu_budget_allowance = allowance;
 }
 
-/// Live preview for an open filter dialog: run the filter on the proxy and upload it. Heavy
-/// commands compute on one background worker (`filter_preview_worker`); everything else keeps
-/// the deterministic inline path (#1676), which also lets headless/CPU tests inspect previews
+/// Live preview for an open filter dialog: run the filter on the proxy and upload it. With
+/// background jobs (the desktop app) it computes on one background worker
+/// (`filter_preview_worker`); otherwise (web, tests, `PHOTOCRAFT_INLINE_JOBS`) it keeps the
+/// deterministic inline path (#1676), which also lets headless/CPU tests inspect previews
 /// without a GPU texture.
 fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &egui::Context) -> Option<(u32, u64, [u32; 2])> {
     if let Some(held) = committed_filter_preview(app, idx) {
@@ -1133,8 +1134,12 @@ fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &egui::Contex
         k: crate::proxy::preview_factor(&st.doc, crate::proxy::reduced_previews(app)),
     };
     let key = request.doc.0 ^ (1u64 << 61);
+    // Every filter's preview computes off the UI thread in the desktop app: Gaussian Blur at
+    // 1000 px takes long enough to freeze the window. Once the slider settles, a preview still
+    // running for an older value is cancelled.
     #[cfg(not(target_arch = "wasm32"))]
-    if app.background_jobs && request.command == "image.mode.indexedColor" {
+    if app.background_jobs {
+        app.filter_preview_worker.supersede(&request, crate::gpu_canvas::now_ms());
         if let Some((finished, computed)) = app.filter_preview_worker.poll()
             && finished == request
         {
@@ -1150,9 +1155,9 @@ fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &egui::Contex
         if !fresh && !app.filter_preview_worker.busy() {
             let doc = app.session.documents().get(idx)?.doc.clone();
             let task = request.clone();
-            if let Err(error) = app.filter_preview_worker.start(request.clone(), ctx.clone(), move || {
+            if let Err(error) = app.filter_preview_worker.start(request.clone(), ctx.clone(), move |cancel| {
                 let t0 = crate::gpu_canvas::now_ms();
-                let result = crate::filter_dialog::preview_document(&doc, task.active, &task.command, &task.params, task.k).map(|doc| {
+                let result = crate::filter_dialog::preview_document_with(&doc, task.active, &task.command, &task.params, task.k, Some(cancel)).map(|doc| {
                     let buffer = photocraft_compose::flatten(&doc);
                     (std::sync::Arc::new(doc), buffer)
                 });
@@ -1381,6 +1386,7 @@ fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     app.tab_strip = None;
     retain_gpu_documents(app);
     crate::transform_tool::track_steps(app, ui.ctx());
+    crate::symmetry_ui::track(app, ui.ctx());
     let n = app.session.documents().len();
     // Files opening in the background (#210) have tabs before they have documents.
     let opening = !app.jobs.opens.is_empty();
@@ -1440,6 +1446,7 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     let mut activate = None;
     let mut close = None;
     let mut tab_action = None;
+    let mut tab_move = None;
     let (mut focus_open, mut cancel_open) = (None, None);
     let focused_open = app.jobs.focus.is_some();
     // Layers dragged over a tab show its document (`layer_transfer`).
@@ -1494,7 +1501,7 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
             let name_g = crate::tab_strip::elided(ui, &name, font.clone(), t.text, name_max);
             // The title was cut: the tooltip has the rest of it.
             let cut = name_g.size().x + 0.5 < natural_w - STUDIO_TAB_PAD + STUDIO_TAB_GAP - meta_g.size().x;
-            let resp = ui.interact(r, ui.id().with(("dtab", i)), Sense::click());
+            let resp = ui.interact(r, ui.id().with(("dtab", i)), Sense::click_and_drag());
             resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, sel, &st.doc.name));
             doc_tabs.push((i, r));
             if sel {
@@ -1523,8 +1530,22 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
             } else if resp.clicked() {
                 activate = Some(i);
             }
+            // Drag a tab sideways to reorder it (#217); a line shows where it will land.
+            if resp.dragged()
+                && let Some(p) = resp.interact_pointer_pos()
+            {
+                tab_drop_line(ui, &placed, p.x, &t);
+            }
+            if resp.drag_stopped() {
+                let x = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.interact_pos())).map_or(r.center().x, |p| p.x);
+                let to = tab_move_target(i, tab_drop_index(&placed, x));
+                if to != i {
+                    tab_move = Some((i, to));
+                }
+            }
+            let has_path = st.path.is_some();
             resp.context_menu(|ui| {
-                tab_action = tab_context_menu(ui, i, tab_count);
+                tab_action = tab_context_menu(ui, i, tab_count, has_path);
             });
         }
         // Files opening in the background: a tab with a progress underline; × cancels.
@@ -1577,6 +1598,12 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     if let Some(i) = close {
         let _ = crate::menus::invoke(app, ui.ctx(), "file.close", json!({"document": i}));
     }
+    if let Some((from, to)) = tab_move
+        && let Err(e) = crate::menus::invoke(app, ui.ctx(), "document.move", json!({"document": from, "to": to}))
+    {
+        app.ui.status = e;
+        app.ui.status_error = true;
+    }
     if let Some((id, params)) = tab_action
         && let Err(e) = crate::menus::invoke(app, ui.ctx(), id, params)
     {
@@ -1588,18 +1615,19 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
 
 /// All tab actions go through the same guarded File commands as the menu bar, including the
 /// unsaved-changes prompt. The clicked tab is explicit even when another document is active.
-fn tab_context_items(index: usize, count: usize) -> [(&'static str, &'static str, serde_json::Value, bool); 3] {
+fn tab_context_items(index: usize, count: usize, has_path: bool) -> [(&'static str, &'static str, serde_json::Value, bool); 4] {
     [
         ("Close", "file.close", json!({"document": index}), true),
         ("Close Others", "file.closeOthers", json!({"document": index}), count > 1),
         ("Close All", "file.closeAll", json!({}), true),
+        ("Reveal in Finder", "file.revealInFinder", json!({"document": index}), has_path),
     ]
 }
 
-fn tab_context_menu(ui: &mut egui::Ui, index: usize, count: usize) -> Option<(&'static str, serde_json::Value)> {
+fn tab_context_menu(ui: &mut egui::Ui, index: usize, count: usize, has_path: bool) -> Option<(&'static str, serde_json::Value)> {
     crate::widgets::menu_scroll(ui, |ui| {
         ui.set_min_width(170.0);
-        for (label, id, params, enabled) in tab_context_items(index, count) {
+        for (label, id, params, enabled) in tab_context_items(index, count, has_path) {
             if ui.add_enabled(enabled, egui::Button::new(tl!(label))).clicked() {
                 ui.close();
                 return Some((id, params));
@@ -1607,6 +1635,33 @@ fn tab_context_menu(ui: &mut egui::Ui, index: usize, count: usize) -> Option<(&'
         }
         None
     })
+}
+
+/// Where a tab dragged to `x` would land: before the first shown tab whose middle is right of
+/// `x`, else after the last shown tab (its document index + 1), like [`TabStrip::slot`].
+fn tab_drop_index(placed: &[(usize, Rect)], x: f32) -> usize {
+    match placed.iter().find(|(_, r)| r.center().x >= x) {
+        Some(&(i, _)) => i,
+        None => placed.last().map_or(0, |&(i, _)| i.saturating_add(1)),
+    }
+}
+
+/// The `document.move` target for dropping the tab at `from` at insertion index `k`: the slot
+/// shifts down when the dragged tab itself is removed first; next to itself it stays put.
+fn tab_move_target(from: usize, k: usize) -> usize {
+    if k > from { k - 1 } else { k }
+}
+
+/// The insertion line shown while a tab is dragged to reorder it.
+fn tab_drop_line(ui: &egui::Ui, placed: &[(usize, Rect)], x: f32, t: &crate::theme::Tokens) {
+    match placed.iter().find(|(_, r)| r.center().x >= x) {
+        Some(&(_, r)) => crate::widgets::drop_line(ui, r, false, true, t),
+        None => {
+            if let Some(&(_, r)) = placed.last() {
+                crate::widgets::drop_line(ui, r, true, true, t);
+            }
+        }
+    }
 }
 
 /// Apply tab-strip clicks: a document tab shows that document, an opening tab its progress, and
@@ -1658,6 +1713,7 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     let active = app.session.active_index().filter(|_| app.jobs.focus.is_none());
     let (mut activate, mut close) = (None, None);
     let mut tab_action = None;
+    let mut tab_move = None;
     let tab_count = app.session.documents().len();
     let dragging = crate::layer_transfer::pointer_if_armed(app, ui.ctx());
     let mut drag_over = None;
@@ -1690,7 +1746,7 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     for &(i, r) in placed.iter().filter(|(i, _)| *i < tab_count) {
         let Some(title) = titles.get(i) else { continue };
         let g = crate::tab_strip::elided(ui, title, font.clone(), t.text, (r.width() - DOC_TAB_PAD).max(1.0));
-        let resp = ui.interact(r, ui.id().with(("ptab", i)), Sense::click());
+        let resp = ui.interact(r, ui.id().with(("ptab", i)), Sense::click_and_drag());
         let sel = Some(i) == active;
         if sel {
             ui.painter().rect_filled(r, 0.0, t.chrome);
@@ -1716,8 +1772,22 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
         } else if resp.clicked() {
             activate = Some(i);
         }
+        // Drag a tab sideways to reorder it (#217); a line shows where it will land.
+        if resp.dragged()
+            && let Some(p) = resp.interact_pointer_pos()
+        {
+            tab_drop_line(ui, &placed, p.x, &t);
+        }
+        if resp.drag_stopped() {
+            let x = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.interact_pos())).map_or(r.center().x, |p| p.x);
+            let to = tab_move_target(i, tab_drop_index(&placed, x));
+            if to != i {
+                tab_move = Some((i, to));
+            }
+        }
+        let has_path = app.session.documents().get(i).is_some_and(|d| d.path.is_some());
         resp.context_menu(|ui| {
-            tab_action = tab_context_menu(ui, i, tab_count);
+            tab_action = tab_context_menu(ui, i, tab_count, has_path);
         });
         doc_tabs.push((i, r));
     }
@@ -1763,6 +1833,12 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     }
     if let Some(i) = close {
         let _ = crate::menus::invoke(app, ui.ctx(), "file.close", json!({"document": i}));
+    }
+    if let Some((from, to)) = tab_move
+        && let Err(e) = crate::menus::invoke(app, ui.ctx(), "document.move", json!({"document": from, "to": to}))
+    {
+        app.ui.status = e;
+        app.ui.status_error = true;
     }
     if let Some((id, params)) = tab_action
         && let Err(e) = crate::menus::invoke(app, ui.ctx(), id, params)
@@ -2323,6 +2399,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     // drawn; otherwise Space is the Hand and ⌘Space / ⌘⌥Space the Zoom tool while held.
     let reposition = crate::hold_keys::reposition_held(app, &ctx);
     crate::crop_ui::set_space(app, reposition);
+    // A tab switched this frame drops the other document's pending crop (#1918).
+    crate::crop_ui::cancel_stale(app);
     crate::crop_ui::ensure_frame(app);
     let mut drawing = crate::crop_ui::active(app);
     if let Some(d) = app.drag.as_mut().filter(|d| crate::hold_keys::repositions(d.tool)) {
@@ -2550,6 +2628,12 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             crate::magnetic_lasso_ui::flush(app);
         }
         if buttons.stopped {
+            // The live painting press already created the stroke and this release commits it.
+            // egui may also report clicked on the same release; replaying that click paints a
+            // second full-pressure dab over the real (possibly light-pressure) pen dab.
+            if press_stroke {
+                buttons.clicked = false;
+            }
             let p = response.interact_pointer_pos().map(|p| xf.to_doc(p)).or_else(|| app.drag.as_ref().and_then(|d| d.points.last().map(|q| [q[0], q[1]])));
             if let Some(d) = p {
                 tool_event(app, ToolEvent::Up { x: d[0], y: d[1] }, mods);
@@ -2593,7 +2677,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
                     if tool == Tool::Move && app.ui.transform.is_none() {
                         begin_transform_controls_at(app, &ctx, &xf, p);
                     }
-                    tool_event(app, ToolEvent::Down { x: d[0], y: d[1], pressure: 1.0 }, click_mods);
+                    // If this tool was not handled on pointer-down, fall back to a
+                    // click-sized gesture while preserving pen pressure (mouse stays at 1).
+                    tool_event(app, ToolEvent::Down { x: d[0], y: d[1], pressure: app.stylus.pressure() }, click_mods);
                     tool_event(app, ToolEvent::Up { x: d[0], y: d[1] }, click_mods);
                 }
             }
@@ -2625,7 +2711,12 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         if app.ui.view.shows(app.ui.view.show.canvas_guides) {
             crate::rulers::draw_guides(app, &painter, &xf, &doc);
         }
+        // The pending crop frame shows on its own document only, not on the other tiles (#1918).
+        let foreign_crop = if app.session.active_index() == Some(idx) { None } else { app.ui.crop_rect.take() };
         draw_drag_preview(app, &painter, &xf);
+        if foreign_crop.is_some() {
+            app.ui.crop_rect = foreign_crop;
+        }
         crate::zoom_tool::draw(&ctx, &painter);
         let resizing = crate::brush_resize::draw(app, &painter, &xf);
         draw_transform_controls(app, &painter, &xf);
@@ -2641,6 +2732,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         crate::distort_ui::draw_overlay(app, &painter, &xf);
         crate::retouch_ui::draw_source_marker(app, &painter, &xf);
         crate::vector_ui::draw_overlay(app, &painter, &xf, &doc);
+        crate::symmetry_ui::draw(app, &painter, &xf);
         crate::analysis_ui::draw_overlay(app, &painter, &xf);
         crate::gradient_ui::draw_overlay(app, &painter, &xf);
         crate::slice_ui::draw_overlay(app, &painter, &xf);
@@ -3371,6 +3463,9 @@ fn tool_move(app: &mut PhotocraftApp, x: f64, y: f64, pressure: f32, mods: egui:
 
 /// Tool state machine. Shared by mouse input and automation.
 pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
+    if crate::symmetry_ui::pointer(app, ev, crate::workspace_ui::sticky_mods(app, mods)) {
+        return;
+    }
     // An Alt+right-drag armed for this press (`paint_mouse`): taken before anything else can
     // consume the event, so it never outlives the press it was armed for (#297).
     let armed = std::mem::take(&mut app.brush_resize_armed);
@@ -3934,6 +4029,8 @@ pub fn commit_polygon(app: &mut PhotocraftApp) {
 
 /// Apply the crop tool's rectangle.
 pub fn commit_crop(app: &mut PhotocraftApp) {
+    // Never another document's frame (#1918).
+    crate::crop_ui::cancel_stale(app);
     let Some(r) = app.ui.crop_rect.take() else { return };
     // The untouched default frame around the whole canvas crops nothing (Photoshop's ↵ on it does
     // nothing); one framing the selection's bounds crops to them (#1789).
@@ -3978,10 +4075,88 @@ pub fn paint_target(app: &PhotocraftApp) -> serde_json::Value {
 }
 
 #[cfg(test)]
+mod tap_pressure_tests {
+    #[test]
+    fn fallback_click_pressure_matches_pen_or_mouse() {
+        let mut s = crate::stylus::Stylus::default();
+        assert_eq!(s.pressure(), 1.0, "mouse clicks paint at full pressure");
+        s.feed.set(Some(crate::stylus::PenSample { pressure: 0.18, ..Default::default() }));
+        assert_eq!(s.pressure(), 0.18, "a tap without a canvas drag still has pen pressure");
+        s.use_pressure = false;
+        assert_eq!(s.pressure(), 1.0, "Use Tablet Pressure off stays full pressure");
+    }
+}
+
+#[cfg(test)]
 mod tabs_tests;
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn every_filter_previews_off_the_ui_thread_and_a_newer_value_cancels_the_old() {
+        // Dragging Gaussian Blur's radius to 1000 px froze the window: the preview ran inline in
+        // the frame, and every slider step waited for the previous blur to finish.
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
+        app.background_jobs = true;
+        crate::filter_dialog::open(&mut app, "filter.blur.gaussianBlur").unwrap();
+        let ctx = egui::Context::default();
+        let wait_for = |app: &mut PhotocraftApp, radius: f64| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while app.filter_preview.as_ref().is_none_or(|p| p.key.params["radius"].as_f64() != Some(radius)) {
+                assert!(std::time::Instant::now() < deadline, "no preview for radius {radius}");
+                ensure_filter_preview(app, 0, &ctx);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        };
+        // The first frame hands the blur to the worker and returns.
+        assert!(ensure_filter_preview(&mut app, 0, &ctx).is_none());
+        assert!(app.filter_preview_worker.busy(), "the preview computes on the worker");
+        let first = app.ui.dialogs[0].fields["radius"].as_f64().unwrap();
+        wait_for(&mut app, first);
+        assert!(app.filter_preview.as_ref().unwrap().result.is_some());
+
+        // A preview for old values occupies the worker until it is cancelled.
+        let st = app.session.active().unwrap();
+        let d = &app.ui.dialogs[0];
+        let stale = crate::filter_dialog::FilterPreviewKey {
+            doc: st.doc.id,
+            revision: st.revision,
+            dialog: d.id,
+            active: st.active_layer,
+            command: "filter.blur.gaussianBlur".into(),
+            params: json!({"radius": 999.0}),
+            k: 1,
+        };
+        let (told, cancelled) = std::sync::mpsc::channel();
+        app.filter_preview_worker
+            .start(stale, ctx.clone(), move |job| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while !job.cancelled() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                let _ = told.send(job.cancelled());
+                crate::filter_preview_worker::Computed { result: None, ms: 0.0 }
+            })
+            .unwrap();
+        // The slider moves on and stops: once the value settles, the stale preview is cancelled
+        // instead of being waited out.
+        app.ui.dialogs[0].fields.insert("radius".into(), json!(12.0));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let was_cancelled = loop {
+            ensure_filter_preview(&mut app, 0, &ctx);
+            if let Ok(c) = cancelled.try_recv() {
+                break c;
+            }
+            assert!(std::time::Instant::now() < deadline, "the stale preview was never cancelled");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(was_cancelled, "the stale preview stopped because it was cancelled, not by timing out");
+        wait_for(&mut app, 12.0);
+        assert!(app.filter_preview.as_ref().unwrap().result.is_some());
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn indexed_preview_discards_a_finished_job_after_slider_change_or_reopening() {
@@ -4004,7 +4179,7 @@ mod tests {
             let (release, wait) = std::sync::mpsc::channel();
             let ctx = egui::Context::default();
             app.filter_preview_worker
-                .start(old.clone(), ctx.clone(), move || {
+                .start(old.clone(), ctx.clone(), move |_| {
                     wait.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
                     crate::filter_preview_worker::Computed { result: None, ms: 0.0 }
                 })
@@ -4181,12 +4356,15 @@ mod tests {
 
     #[test]
     fn tab_context_uses_clicked_document_and_existing_close_commands() {
-        let items = tab_context_items(2, 3);
-        assert_eq!(items.iter().map(|(_, id, _, _)| *id).collect::<Vec<_>>(), ["file.close", "file.closeOthers", "file.closeAll"]);
+        let items = tab_context_items(2, 3, true);
+        assert_eq!(items.iter().map(|(_, id, _, _)| *id).collect::<Vec<_>>(), ["file.close", "file.closeOthers", "file.closeAll", "file.revealInFinder"]);
         assert_eq!(items[0].2, json!({"document": 2}));
         assert_eq!(items[1].2, json!({"document": 2}));
         assert_eq!(items[2].2, json!({}));
-        assert!(!tab_context_items(0, 1)[1].3);
+        assert_eq!(items[3].2, json!({"document": 2}));
+        assert!(items[3].3, "a saved document can be revealed in the file manager");
+        assert!(!tab_context_items(2, 3, false)[3].3, "an unsaved document cannot");
+        assert!(!tab_context_items(0, 1, false)[1].3);
         assert!(items.iter().all(|(_, id, _, _)| photocraft_engine::commands::find(id).is_some()));
     }
 
@@ -4229,10 +4407,62 @@ mod tests {
         app.run("file.new", json!({"width": 8, "height": 8, "name": "Edited"})).unwrap();
         app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
         assert_eq!(app.session.active_index(), Some(1));
-        let (_, id, params, _) = tab_context_items(0, 2)[1].clone();
+        let (_, id, params, _) = tab_context_items(0, 2, false)[1].clone();
         crate::menus::invoke(&mut app, &egui::Context::default(), id, params).unwrap();
         assert!(app.discard.is_some(), "close others must ask before discarding the edited tab");
         assert_eq!(app.session.documents().len(), 2);
+    }
+
+    /// The pure half of tab drag-to-reorder (UI-217-6): where a drop lands and which
+    /// `document.move` target that is.
+    #[test]
+    fn tab_drop_index_and_move_target_cover_reorder_drops() {
+        let r = |x: f32| Rect::from_min_size(egui::pos2(x, 0.0), egui::vec2(100.0, 26.0));
+        let placed = vec![(0, r(0.0)), (1, r(100.0)), (2, r(200.0))];
+        assert_eq!(tab_drop_index(&placed, 10.0), 0);
+        assert_eq!(tab_drop_index(&placed, 160.0), 2);
+        assert_eq!(tab_drop_index(&placed, 350.0), 3, "past the end lands after the last shown tab");
+        assert_eq!(tab_move_target(0, 3), 2);
+        assert_eq!(tab_move_target(2, 0), 0);
+        assert_eq!(tab_move_target(1, 1), 1, "before itself: no move");
+        assert_eq!(tab_move_target(1, 2), 1, "just after itself: no move");
+        assert_eq!(tab_move_target(0, 1), 0);
+    }
+
+    /// Dragging a tab onto another's slot reorders the open documents (UI-217-6), in both the
+    /// studio and the Photoshop-style strips.
+    #[test]
+    fn dragging_a_tab_reorders_the_documents() {
+        use egui_kittest::kittest::Queryable;
+        for kind in [crate::theme::ThemeKind::Studio, crate::theme::ThemeKind::Pro] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            for name in ["a", "b", "c"] {
+                app.run("file.new", json!({"width": 8, "height": 8, "name": name})).unwrap();
+            }
+            app.sync_views();
+            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(700.0, 40.0)).build_ui_state(
+                |ui, (app, ready): &mut (PhotocraftApp, bool)| {
+                    if *ready {
+                        tabs(app, ui);
+                    }
+                },
+                (app, false),
+            );
+            PhotocraftApp::setup_context(&h.ctx, kind);
+            h.state_mut().1 = true;
+            h.run_steps(2);
+            let b = h.get_by_label_contains("b").rect();
+            let a = h.get_by_label_contains("a").rect();
+            let target = egui::pos2(a.left() + 2.0, a.center().y);
+            h.drag_at(b.center());
+            h.run_steps(1);
+            h.hover_at(target);
+            h.run_steps(1);
+            h.drop_at(target);
+            h.run_steps(2);
+            let names: Vec<String> = h.state().0.session.documents().iter().map(|d| d.doc.name.clone()).collect();
+            assert_eq!(names, ["b", "a", "c"], "{kind:?}: the dragged tab took the dropped slot");
+        }
     }
 
     #[test]
