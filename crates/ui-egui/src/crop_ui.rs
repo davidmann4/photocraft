@@ -38,6 +38,8 @@ pub struct CropState {
     frame_for: Option<(usize, u32, u32)>,
     /// The frame is being edited (pressed since it was made): the canvas shows what lies past it.
     pub editing: bool,
+    /// The document the pending frame (or gesture) belongs to ([`cancel_stale`], #1918).
+    doc: Option<photocraft_doc::DocId>,
 }
 
 /// A crop gesture in progress. Rects are `[x0, y0, x1, y1]` in document coordinates.
@@ -191,11 +193,42 @@ pub fn ensure_frame(app: &mut PhotocraftApp) {
     app.crop.default_frame = true;
     app.crop.frame_for = key;
     app.crop.editing = false;
+    claim(app);
 }
 
 /// A crop gesture is in progress: Space repositions the frame rather than panning.
 pub fn active(app: &PhotocraftApp) -> bool {
     app.ui.tool == Tool::Crop && app.crop.drag.is_some()
+}
+
+/// Cancel the pending crop: the frame, any gesture on it and the default-frame state. With the
+/// Crop tool still picked, [`ensure_frame`] then makes the active document a new default frame.
+pub fn cancel(app: &mut PhotocraftApp) {
+    app.ui.crop_rect = None;
+    app.crop.drag = None;
+    app.crop.default_frame = false;
+    app.crop.frame_for = None;
+    app.crop.editing = false;
+}
+
+/// The pending frame belongs to the active document.
+fn claim(app: &mut PhotocraftApp) {
+    app.crop.doc = app.session.active().map(|st| st.doc.id);
+}
+
+/// A pending crop belongs to the document it was drawn on (#1918): when another document becomes
+/// active (File › New, Open, a tab switch, closing the document) it is cancelled, so it never
+/// shows on or crops another document. (Photoshop greys most menus out during a pending crop;
+/// cancelling it is the safe equivalent for every way the active document can change.) Run on
+/// every frame and command (`sync_views`) and before a commit.
+pub fn cancel_stale(app: &mut PhotocraftApp) {
+    let active = app.session.active().map(|st| st.doc.id);
+    let pending = app.ui.crop_rect.is_some() || app.crop.drag.is_some();
+    // A frame made before any document was claimed (control channel, tests) is the active one's.
+    if pending && app.crop.doc.is_some() && app.crop.doc != active {
+        cancel(app);
+    }
+    app.crop.doc = active;
 }
 
 /// The frame is being edited, so the canvas shows the pixels past its edges (Photoshop's crop
@@ -232,6 +265,7 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
     }
     match ev {
         ToolEvent::Down { .. } => {
+            claim(app);
             app.crop.editing = true;
             let frame = app.ui.crop_rect.filter(|r| r.iter().all(|v| v.is_finite()));
             app.crop.drag = Some(match frame.map(|r| (r, hit(r, p, tolerance(app)))) {
@@ -541,6 +575,68 @@ mod tests {
         assert_eq!(st.ui.crop_rect, Some(moved));
         assert_eq!(st.ui.views[0].center, view.center, "the view did not pan");
         assert!(st.crop.drag.is_none());
+    }
+
+    /// #1918: a pending crop belongs to the document it was drawn on. File › New, opening a file
+    /// or switching tabs cancels it; it never shows on, or crops, another document.
+    #[test]
+    fn a_pending_crop_stays_with_its_document() {
+        let size = |app: &PhotocraftApp| app.session.active().map(|st| st.doc.size);
+        // File › New.
+        let mut app = app(SampleType::U8);
+        drag(&mut app, &[[10.0, 10.0], [50.0, 40.0]], NONE);
+        assert_eq!(app.ui.crop_rect, Some([10.0, 10.0, 50.0, 40.0]));
+        app.run("file.new", json!({"width": 300, "height": 150})).unwrap();
+        assert_eq!(app.ui.crop_rect, None, "the first document's frame is gone");
+        assert!(app.crop.drag.is_none() && !app.crop.editing && !app.crop.default_frame);
+        crate::canvas::commit_crop(&mut app);
+        assert_eq!(size(&app), Some(Size::new(300, 150)), "↵ crops nothing");
+        // The new document gets its own default frame.
+        ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 300.0, 150.0]));
+        assert!(app.crop.default_frame);
+        // Switching tabs (outside a command), even before the next frame's sync: ↵ never crops
+        // the other document.
+        drag(&mut app, &[[20.0, 20.0], [60.0, 60.0]], NONE);
+        assert!(app.session.set_active(0));
+        crate::canvas::commit_crop(&mut app);
+        assert_eq!(size(&app), Some(Size::new(200, 100)));
+        assert_eq!(app.session.documents()[1].doc.size, Size::new(300, 150));
+        assert_eq!(app.ui.crop_rect, None);
+        // The next frame's sync also drops a frame left on a tab switched away from.
+        drag(&mut app, &[[20.0, 20.0], [60.0, 60.0]], NONE);
+        assert!(app.session.set_active(1));
+        app.sync_views();
+        assert_eq!(app.ui.crop_rect, None);
+        // Closing another document keeps the pending crop; closing its own cancels it.
+        drag(&mut app, &[[20.0, 20.0], [60.0, 60.0]], NONE);
+        app.session.close(0);
+        app.sync_views();
+        assert_eq!(app.ui.crop_rect, Some([20.0, 20.0, 60.0, 60.0]), "still its document");
+        crate::canvas::commit_crop(&mut app);
+        assert_eq!(size(&app), Some(Size::new(40, 40)));
+        drag(&mut app, &[[5.0, 5.0], [25.0, 25.0]], NONE);
+        app.session.close(0);
+        app.sync_views();
+        assert!(app.session.active().is_none());
+        assert_eq!(app.ui.crop_rect, None);
+        assert!(app.crop.drag.is_none());
+        crate::canvas::commit_crop(&mut app);
+        ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, None, "no document, no frame");
+    }
+
+    /// A drag in progress when its document goes away is dropped too, not finished elsewhere.
+    #[test]
+    fn a_crop_drag_ends_with_its_document() {
+        let mut app = app(SampleType::U8);
+        tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 10.0, pressure: 1.0 }, NONE);
+        tool_event(&mut app, ToolEvent::Move { x: 50.0, y: 40.0, pressure: 1.0 }, NONE);
+        app.run("file.new", json!({"width": 300, "height": 150})).unwrap();
+        tool_event(&mut app, ToolEvent::Up { x: 60.0, y: 50.0 }, NONE);
+        assert_eq!(app.ui.crop_rect, None);
+        crate::canvas::commit_crop(&mut app);
+        assert_eq!(app.session.active().map(|st| st.doc.size), Some(Size::new(300, 150)));
     }
 
     #[test]
