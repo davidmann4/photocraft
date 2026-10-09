@@ -399,6 +399,9 @@ pub fn confirm(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
             if result.is_ok() && cmd == "view.newGuideLayout" {
                 app.ui.view.guide_layout = params;
             }
+            if result.is_ok() {
+                crate::filter_dialog::remember(app, &cmd, &d.fields);
+            }
             result
         }
         DialogKind::LayerStyle => crate::layer_style::confirm(app, &d.fields),
