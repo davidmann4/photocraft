@@ -992,7 +992,11 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         }
                         crate::crop_straighten::options_button(&mut app.crop.straighten, ui);
                         crate::crop_overlay::options_button(o, ui);
+                        let pick_shield_color = crate::crop_shield::options_button(&mut o.crop_shield, ui);
                         widgets::checkbox(ui, &mut o.crop_delete, tl!("Delete Cropped Pixels"));
+                        if pick_shield_color {
+                            crate::crop_shield::pick_custom_color(app);
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if icons::button(
                                 ui,

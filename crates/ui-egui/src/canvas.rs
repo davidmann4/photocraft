@@ -2800,8 +2800,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         crate::layer_pick_ui::show(app, &ctx);
         crate::canvas_tool_menu::show(app, &ctx);
         crate::snap_ui::draw(app, &painter, &xf);
-        // The canvas edge isn't outlined while the pixels past it show (Photoshop's crop preview).
-        if border == photocraft_engine::prefs::CanvasBorder::Line && !beyond {
+        // The canvas edge isn't outlined while the pixels past it show (Photoshop's crop preview),
+        // nor while the Crop tool hides everything outside its box (Show Cropped Area off).
+        if border == photocraft_engine::prefs::CanvasBorder::Line && !beyond && !crate::crop_shield::hides_outside(app) {
             painter.rect_stroke(img_rect, 0.0, Stroke::new(1.0, Color32::from_gray(20)), egui::StrokeKind::Outside);
         }
         crate::type_tool::draw_overlay(app, &painter, &xf);
@@ -3067,18 +3068,20 @@ fn marching_ants(painter: &egui::Painter, r: Rect, time: f64) {
     }
 }
 
-/// Photoshop crop overlay: dimmed outside, bright frame, the composition `guides` (unit-square
-/// polylines, `crop_overlay::guides`), corner and edge handles.
-fn crop_overlay(painter: &egui::Painter, r: Rect, guides: &[crate::crop_overlay::Polyline]) {
+/// Photoshop crop overlay: the `shield` outside (`crop_shield::fill`; none when disabled), bright
+/// frame, the composition `guides` (unit-square polylines, `crop_overlay::guides`), corner and
+/// edge handles.
+fn crop_overlay(painter: &egui::Painter, r: Rect, shield: Option<Color32>, guides: &[crate::crop_overlay::Polyline]) {
     let clip = painter.clip_rect();
-    let dim = Color32::from_black_alpha(130);
-    for band in [
-        Rect::from_min_max(clip.min, egui::pos2(clip.max.x, r.min.y)),
-        Rect::from_min_max(egui::pos2(clip.min.x, r.max.y), clip.max),
-        Rect::from_min_max(egui::pos2(clip.min.x, r.min.y), egui::pos2(r.min.x, r.max.y)),
-        Rect::from_min_max(egui::pos2(r.max.x, r.min.y), egui::pos2(clip.max.x, r.max.y)),
-    ] {
-        painter.rect_filled(band, 0.0, dim);
+    if let Some(dim) = shield {
+        for band in [
+            Rect::from_min_max(clip.min, egui::pos2(clip.max.x, r.min.y)),
+            Rect::from_min_max(egui::pos2(clip.min.x, r.max.y), clip.max),
+            Rect::from_min_max(egui::pos2(clip.min.x, r.min.y), egui::pos2(r.min.x, r.max.y)),
+            Rect::from_min_max(egui::pos2(r.max.x, r.min.y), egui::pos2(clip.max.x, r.max.y)),
+        ] {
+            painter.rect_filled(band, 0.0, dim);
+        }
     }
     painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Middle);
     draw_crop_guides(painter, guides, |a, b| r.min + r.size() * vec2(a, b));
@@ -3098,7 +3101,7 @@ fn crop_overlay(painter: &egui::Painter, r: Rect, guides: &[crate::crop_overlay:
 
 /// [`crop_overlay`] for a turned frame (or a rotated view): `q` is the frame's top-left, top-right,
 /// bottom-right and bottom-left corner on screen, a parallelogram.
-fn crop_overlay_turned(painter: &egui::Painter, q: [Pos2; 4], guides: &[crate::crop_overlay::Polyline]) {
+fn crop_overlay_turned(painter: &egui::Painter, q: [Pos2; 4], shield: Option<Color32>, guides: &[crate::crop_overlay::Polyline]) {
     let (u, v) = (q[1] - q[0], q[3] - q[0]);
     let (lu, lv) = (u.length(), v.length());
     if !(lu.is_finite() && lv.is_finite()) || lu < 1e-3 || lv < 1e-3 {
@@ -3110,17 +3113,18 @@ fn crop_overlay_turned(painter: &egui::Painter, q: [Pos2; 4], guides: &[crate::c
     let reach = clip.size().length() + (clip.center() - at(0.5, 0.5)).length();
     let (eu, ev) = (reach / lu, reach / lv);
     let outer = [at(-eu, -ev), at(1.0 + eu, -ev), at(1.0 + eu, 1.0 + ev), at(-eu, 1.0 + ev)];
-    let dim = Color32::from_black_alpha(130);
-    let mut mesh = egui::Mesh::default();
-    for p in q.iter().chain(outer.iter()) {
-        mesh.colored_vertex(*p, dim);
+    if let Some(dim) = shield {
+        let mut mesh = egui::Mesh::default();
+        for p in q.iter().chain(outer.iter()) {
+            mesh.colored_vertex(*p, dim);
+        }
+        for i in 0..4u32 {
+            let j = (i + 1) % 4;
+            mesh.add_triangle(i, j, 4 + j);
+            mesh.add_triangle(i, 4 + j, 4 + i);
+        }
+        painter.add(egui::Shape::mesh(mesh));
     }
-    for i in 0..4u32 {
-        let j = (i + 1) % 4;
-        mesh.add_triangle(i, j, 4 + j);
-        mesh.add_triangle(i, 4 + j, 4 + i);
-    }
-    painter.add(egui::Shape::mesh(mesh));
     painter.add(egui::Shape::closed_line(q.to_vec(), Stroke::new(1.0, Color32::WHITE)));
     draw_crop_guides(painter, guides, at);
     let h = Stroke::new(3.0, Color32::WHITE);
@@ -3294,12 +3298,13 @@ fn draw_tool_state(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform,
     crate::crop_straighten::draw(app, painter, |p| xf.to_screen(p[0] as f32, p[1] as f32), hover);
     if let Some(c) = app.ui.crop_rect {
         let deg = crate::crop_ui::angle(app);
+        let shield = crate::crop_shield::current(app, painter.ctx());
         if deg == 0.0 && xf.rotation == 0.0 {
             let r = Rect::from_two_pos(xf.to_screen(c[0] as f32, c[1] as f32), xf.to_screen(c[2] as f32, c[3] as f32));
-            crop_overlay(painter, r, &crate::crop_overlay::current_guides(app, r.width(), r.height()));
+            crop_overlay(painter, r, shield, &crate::crop_overlay::current_guides(app, r.width(), r.height()));
         } else {
             let q = crate::crop_ui::corners(c, deg).map(|p| xf.to_screen(p[0] as f32, p[1] as f32));
-            crop_overlay_turned(painter, q, &crate::crop_overlay::current_guides(app, q[0].distance(q[1]), q[0].distance(q[3])));
+            crop_overlay_turned(painter, q, shield, &crate::crop_overlay::current_guides(app, q[0].distance(q[1]), q[0].distance(q[3])));
         }
         // The frame's angle beside the pointer while it turns (#1792).
         if let (Some(a), Some(h)) = (crate::crop_ui::turning(app), hover) {

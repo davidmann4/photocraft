@@ -2362,3 +2362,10 @@ fontWeight	Italic	Cursiva
 	Set the overlay options for the Crop tool	Definir las opciones de superposición de la herramienta Recortar
 	Alt-click went to the desktop, which moves windows with Alt-drag. Set its window-move key to Super, or latch Alt in Window › Modifier Keys.	El Alt+clic lo recibió el escritorio, que mueve ventanas con Alt+arrastrar. Cambia su tecla para mover ventanas a Super o bloquea Alt en Ventana › Teclas modificadoras.
 	Straighten the image by drawing a line on it	Enderezar la imagen dibujando una línea en ella
+	Set additional Crop options	Definir opciones de recorte adicionales
+	Show Cropped Area	Mostrar área recortada
+	Enable Crop Shield	Activar escudo de recorte
+	Match Canvas	Igualar lienzo
+	Auto Adjust Opacity	Ajustar opacidad automáticamente
+	Crop Shield color	Color del escudo de recorte
+	Color Picker (Crop Shield Color)	Selector de color (Color del escudo de recorte)
