@@ -1265,19 +1265,7 @@ impl Compositor {
             if let Ok(mut view) = staging.slice(..).get_mapped_range_mut() {
                 let default = default_nonzero.then(|| convert_tile(surface, None, kind, TileCoord::new(0, 0)));
                 let row = TILE_SIZE as usize * bpp;
-                for c in region.tiles() {
-                    let converted;
-                    let bytes = match (surface.tile(c), &default) {
-                        (Some(t), _) => {
-                            converted = convert_tile(surface, Some(t), kind, c);
-                            stats.tiles_uploaded += 1;
-                            stats.bytes_uploaded += converted.len();
-                            r.tiles.insert(c, t.clone());
-                            &converted
-                        }
-                        (None, Some(d)) => d,
-                        (None, None) => continue,
-                    };
+                let mut place = |c: TileCoord, bytes: &[u8]| {
                     let tr = c.rect();
                     let (ox, oy) = ((tr.x0 - region.x0) as usize, (tr.y0 - region.y0) as usize);
                     for (y, src) in bytes.chunks_exact(row).enumerate() {
@@ -1286,7 +1274,21 @@ impl Compositor {
                             view.slice(o..o + row).copy_from_slice(src);
                         }
                     }
+                };
+                let mut present = Vec::new();
+                for c in region.tiles() {
+                    match (surface.tile(c), &default) {
+                        (Some(t), _) => present.push((c, t.clone())),
+                        (None, Some(d)) => place(c, d),
+                        (None, None) => {}
+                    }
                 }
+                convert_tiles(surface, present, kind, |c, t, bytes| {
+                    stats.tiles_uploaded += 1;
+                    stats.bytes_uploaded += bytes.len();
+                    r.tiles.insert(c, t.clone());
+                    place(c, bytes);
+                });
             }
             staging.unmap();
             encoder.copy_buffer_to_texture(
@@ -1306,18 +1308,13 @@ impl Compositor {
         r.stamp = self.stamp;
         r.doc = doc;
         let mut blank: Option<Vec<u8>> = None;
+        let mut changed = Vec::new();
         for c in region.tiles() {
             match surface.tile(c) {
                 Some(t) => {
-                    if r.tiles.get(&c).is_some_and(|old| Arc::ptr_eq(old, t)) {
-                        continue;
+                    if !r.tiles.get(&c).is_some_and(|old| Arc::ptr_eq(old, t)) {
+                        changed.push((c, t.clone()));
                     }
-                    let bytes = convert_tile(surface, Some(t), kind, c);
-                    write_tile(queue, r, c, &bytes);
-                    stats.tiles_uploaded += 1;
-                    stats.bytes_uploaded += bytes.len();
-                    self.staged += bytes.len() as u64;
-                    r.tiles.insert(c, t.clone());
                 }
                 None => {
                     if r.tiles.remove(&c).is_none() {
@@ -1336,6 +1333,14 @@ impl Compositor {
                 }
             }
         }
+        let staged = &mut self.staged;
+        convert_tiles(surface, changed, kind, |c, t, bytes| {
+            write_tile(queue, r, c, bytes);
+            stats.tiles_uploaded += 1;
+            stats.bytes_uploaded += bytes.len();
+            *staged += bytes.len() as u64;
+            r.tiles.insert(c, t.clone());
+        });
         Some((key, [region.x0, region.y0, region.width() as i32, region.height() as i32]))
     }
 
@@ -1703,6 +1708,40 @@ fn write_tile(queue: &wgpu::Queue, r: &Resident, c: TileCoord, bytes: &[u8]) {
     );
 }
 
+/// Distinct tiles converted per parallel batch: bounds the converted bytes held at once (64 tiles
+/// of a 16-bit page are 32 MiB).
+const CONVERT_BATCH: usize = 64;
+
+/// Convert `tiles` of `surface` to `kind` texels and hand each coordinate's bytes to `put`.
+/// Each distinct tile is converted once (a solid fill shares one `Arc` across every coordinate it
+/// covers), in parallel batches. Converting every tile one after another on the UI thread froze a
+/// 50 MP 16-bit document for about 1.4 s after a full-canvas fill (#1774). Returns how many
+/// tiles were converted.
+fn convert_tiles(surface: &Surface, tiles: Vec<(TileCoord, Arc<Tile>)>, kind: TexKind, mut put: impl FnMut(TileCoord, &Arc<Tile>, &[u8])) -> usize {
+    let mut groups: Vec<(Arc<Tile>, Vec<TileCoord>)> = Vec::new();
+    let mut index: HashMap<*const Tile, usize> = HashMap::new();
+    for (c, t) in tiles {
+        match index.get(&Arc::as_ptr(&t)).and_then(|&i| groups.get_mut(i)) {
+            Some(g) => g.1.push(c),
+            None => {
+                index.insert(Arc::as_ptr(&t), groups.len());
+                groups.push((t, vec![c]));
+            }
+        }
+    }
+    for batch in groups.chunks(CONVERT_BATCH) {
+        // A tile's content is the same at every coordinate sharing it: convert it at the first.
+        let jobs: Vec<_> = batch.iter().filter_map(|(t, cs)| cs.first().map(|c| (t, *c))).collect();
+        let converted = fx::par_map(jobs, |(t, c)| convert_tile(surface, Some(t), kind, c));
+        for ((t, cs), bytes) in batch.iter().zip(&converted) {
+            for c in cs {
+                put(*c, t, bytes);
+            }
+        }
+    }
+    groups.len()
+}
+
 /// Tile pixels in the texture's format. `tile = None` gives the default pixel everywhere.
 fn convert_tile(surface: &Surface, tile: Option<&Arc<Tile>>, kind: TexKind, c: TileCoord) -> Vec<u8> {
     if let (Some(t), TexKind::Rgba8Direct | TexKind::R8Direct) = (tile, kind) {
@@ -1920,6 +1959,56 @@ mod tests {
     fn op_record_fits_the_uniform() {
         let p = plan::Pass::new(Kernel::FxPaint, 0);
         assert_eq!(op_words(&p, None, None, None).len() as u64, OP_UNIFORM);
+    }
+
+    /// #1774: a solid fill shares one tile across every coordinate; it is converted once, and
+    /// every coordinate (shared or not) still gets exactly the bytes `convert_tile` gives it, at
+    /// every depth and texture kind.
+    #[test]
+    fn convert_tiles_converts_each_distinct_tile_once() {
+        let area = Rect::new(0, 0, TILE_SIZE * 9, TILE_SIZE * 9);
+        for (fmt, kind) in [
+            (PixelFormat::RGBA8, TexKind::Rgba8Direct),
+            (PixelFormat { alpha: false, ..PixelFormat::RGBA8 }, TexKind::Rgba8),
+            (PixelFormat::RGBA16, TexKind::Rgba16F),
+            (PixelFormat::RGBA32F, TexKind::Rgba16F),
+            (PixelFormat::GRAY8, TexKind::R8Direct),
+            (PixelFormat { sample: SampleType::U16, ..PixelFormat::GRAY8 }, TexKind::R32F),
+        ] {
+            let mut s = Surface::new(fmt);
+            let px = [0.2, 0.4, 0.6, 1.0];
+            let n = fmt.channels();
+            // Fully covered tiles share one `Arc`; then two tiles get their own pixels.
+            s.fill_rect(area, &px[..n]);
+            s.fill_rect(Rect::new(3, 5, 40, 60), &[0.9, 0.1, 0.3, 0.5][..n]);
+            s.fill_rect(Rect::new(TILE_SIZE * 4 + 7, TILE_SIZE * 2, TILE_SIZE * 4 + 9, TILE_SIZE * 2 + 3), &[0.0; 4][..n]);
+            let tiles: Vec<_> = area.tiles().filter_map(|c| s.tile(c).map(|t| (c, t.clone()))).collect();
+            assert_eq!(tiles.len(), 81, "{fmt:?}");
+            let mut seen = Vec::new();
+            let converted = convert_tiles(&s, tiles, kind, |c, t, bytes| {
+                assert!(s.tile(c).is_some_and(|own| Arc::ptr_eq(own, t)), "{fmt:?} {c:?}");
+                assert_eq!(bytes, convert_tile(&s, Some(t), kind, c).as_slice(), "{fmt:?} {c:?}");
+                seen.push(c);
+            });
+            assert_eq!(converted, 3, "{fmt:?}: the shared tile once, plus the two edited ones");
+            seen.sort_by_key(|c| (c.ty, c.tx));
+            let mut want: Vec<_> = area.tiles().collect();
+            want.sort_by_key(|c| (c.ty, c.tx));
+            assert_eq!(seen, want, "{fmt:?}: every coordinate once");
+        }
+        // More distinct tiles than one batch: all converted, each coordinate once.
+        let mut s = Surface::new(PixelFormat::RGBA16);
+        let wide = Rect::new(0, 0, TILE_SIZE * (CONVERT_BATCH as i32 + 5), TILE_SIZE);
+        for c in wide.tiles() {
+            s.fill_rect(Rect::new(c.rect().x0, 0, c.rect().x0 + 1, 1), &[c.tx as f32 / 100.0, 0.0, 0.0, 1.0]);
+        }
+        let tiles: Vec<_> = wide.tiles().filter_map(|c| s.tile(c).map(|t| (c, t.clone()))).collect();
+        let mut n = 0;
+        let converted = convert_tiles(&s, tiles, TexKind::Rgba16F, |c, t, bytes| {
+            assert_eq!(bytes, convert_tile(&s, Some(t), TexKind::Rgba16F, c).as_slice());
+            n += 1;
+        });
+        assert_eq!((converted, n), (CONVERT_BATCH + 5, CONVERT_BATCH + 5));
     }
 
     #[test]
