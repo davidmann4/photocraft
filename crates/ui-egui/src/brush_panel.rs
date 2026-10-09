@@ -67,6 +67,8 @@ pub struct Renaming {
     pub group: bool,
     /// The preset (or group) being renamed.
     pub name: String,
+    /// With `group`: the nested folder of group `name` being renamed (empty = the group itself).
+    pub folder: Vec<String>,
     /// The text typed so far.
     pub text: String,
 }
@@ -75,7 +77,8 @@ pub struct Renaming {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BrushesPanelState {
-    /// Names of collapsed groups.
+    /// Collapsed groups and folders: a group's label, or for a nested folder the group's label and
+    /// the folder path joined with `/` ([`crate::brushes_tab::folder_view_key`]).
     pub collapsed: Vec<String>,
     /// Case-insensitive name filter.
     pub filter: String,

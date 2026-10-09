@@ -82,7 +82,7 @@ pub fn apply(app: &mut PhotocraftApp, ctx: &egui::Context, picks: Vec<Pick>) {
                 run_or_status(app, "brush.presets.save", json!({ "name": name }));
                 // Photoshop asks for the new preset's name: the picker's rename bar does.
                 if app.session.tools.presets.iter().any(|p| p.name == name) {
-                    app.ui.brush_picker_list.renaming = Some(Renaming { group: false, name, text: String::new() });
+                    app.ui.brush_picker_list.renaming = Some(Renaming { group: false, name, folder: Vec::new(), text: String::new() });
                 }
             }
             Pick::Import => {
@@ -184,7 +184,7 @@ fn gear_menu(ui: &mut egui::Ui, b: &BrushSettings, presets: &[BrushPreset], st: 
             if ui.button(tl!("Rename Brush…")).clicked()
                 && let Some(name) = current.clone()
             {
-                st.renaming = Some(Renaming { group: false, name, text: String::new() });
+                st.renaming = Some(Renaming { group: false, name, folder: Vec::new(), text: String::new() });
                 ui.close();
             }
             if ui.button(tl!("Delete Brush")).clicked()

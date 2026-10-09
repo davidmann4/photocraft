@@ -610,7 +610,7 @@ fn presets_save(s: &mut Session, p: &Value) -> Result<Value> {
         Some(patch) => merge_brush(&s.tools.brush, patch, cmd)?,
         None => s.tools.brush.clone(),
     };
-    upsert(s, BrushPreset { name: name.clone(), brush, builtin: false, group: String::new() });
+    upsert(s, BrushPreset { name: name.clone(), brush, builtin: false, group: String::new(), folder: Vec::new() });
     Ok(json!({ "name": name, "count": s.tools.presets.len() }))
 }
 
@@ -686,7 +686,7 @@ fn define_from_selection(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let tip = GrayTile::from_f32(tw, th, &data);
     let brush = BrushSettings { tip: TipShape::Sampled(tip), size: tw.max(th) as f32, spacing: 0.25, pressure_size: false, ..BrushSettings::default() };
-    upsert(s, BrushPreset { name: name.clone(), brush: brush.clone(), builtin: false, group: String::new() });
+    upsert(s, BrushPreset { name: name.clone(), brush: brush.clone(), builtin: false, group: String::new(), folder: Vec::new() });
     s.tools.brush = brush;
     Ok(json!({ "name": name, "width": tw, "height": th }))
 }

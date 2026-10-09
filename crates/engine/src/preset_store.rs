@@ -5,7 +5,8 @@
 //!
 //! - `<group>-<hash>.pcbrushes`: one JSON file per preset group (folder) holding the presets'
 //!   settings with every bitmap (sampled tip, Dual Brush tip, texture tile) replaced by a
-//!   reference to a tip file, plus each tip's size and the tip file of its small preview;
+//!   reference to a tip file, plus each tip's size and the tip file of its small preview. A
+//!   preset in a nested folder of its group records the folder path (`folder`, #1851);
 //! - `tips/<hash>.pctip`: content-addressed bitmaps, deflated, stored at 8 bits per sample when
 //!   the tip came from 8-bit data and 16 bits otherwise. Renaming or re-grouping a preset only
 //!   rewrites a small JSON file; a tip no group references any more is deleted;
@@ -328,6 +329,10 @@ struct StoredPreset {
     brush: BrushSettings,
     #[serde(default)]
     tips: TipRefs,
+    /// Nested folders inside the group ([`BrushPreset::folder`]); missing in stores written
+    /// before #1851, which load with every preset directly in its group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    folder: Vec<String>,
 }
 
 /// What a group file records about each tip it references, so loading needs only the preview.
@@ -443,6 +448,13 @@ fn join_tips(mut b: BrushSettings, refs: &TipRefs, tiles: &HashMap<String, Store
     let r = [get(&refs.tip)?, get(&refs.dual_tip)?, get(&refs.texture)?];
     set_stored(&mut b, r);
     Some(b)
+}
+
+/// A folder path read from disk, bounded like the commands' (at most
+/// [`crate::brush_preset_cmds::MAX_FOLDER_DEPTH`] non-empty names): a hand-edited file can't
+/// build an absurd tree.
+fn sanitize_folder(folder: Vec<String>) -> Vec<String> {
+    folder.into_iter().map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).take(crate::brush_preset_cmds::MAX_FOLDER_DEPTH).collect()
 }
 
 fn tip_file(hash: &str) -> String {
@@ -647,7 +659,7 @@ pub fn open(backend: Box<dyn PresetBackend>) -> Opened {
                             hashes.push(i.preview.clone());
                         }
                     }
-                    items.push(BrushPreset { name: sp.name, brush, builtin: false, group: g.group.clone() });
+                    items.push(BrushPreset { name: sp.name, brush, builtin: false, group: g.group.clone(), folder: sanitize_folder(sp.folder) });
                 }
                 None => missing += 1,
             }
@@ -974,7 +986,7 @@ impl PresetStore {
             }
             let key = |r: &Option<StoredTile>| r.as_ref().map(|t| t.key.clone());
             let tips = TipRefs { tip: key(&refs[0]), dual_tip: key(&refs[1]), texture: key(&refs[2]) };
-            stored.push(StoredPreset { name: p.name.clone(), brush: settings_only(&mut p.brush), tips });
+            stored.push(StoredPreset { name: p.name.clone(), brush: settings_only(&mut p.brush), tips, folder: p.folder.clone() });
             tiles.push(refs);
         }
         let gf = GroupFile { format: GROUP_FORMAT.into(), version: 1, group: group.to_string(), presets: stored, tips: infos };

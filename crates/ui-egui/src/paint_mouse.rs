@@ -426,7 +426,8 @@ mod tests {
         assert_eq!(h.state().ui.brush_picker_list.view, crate::brush_panel::BrushesView::List);
         assert!(h.state().ui.brush_picker.is_some());
         // A rename left open goes with the picker.
-        h.state_mut().ui.brush_picker_list.renaming = Some(crate::brush_panel::Renaming { group: false, name: "Inky".into(), text: String::new() });
+        h.state_mut().ui.brush_picker_list.renaming =
+            Some(crate::brush_panel::Renaming { group: false, name: "Inky".into(), folder: Vec::new(), text: String::new() });
         h.run_steps(2);
         let far = c - vec2(300.0, 200.0);
         h.event(egui::Event::PointerMoved(far));
