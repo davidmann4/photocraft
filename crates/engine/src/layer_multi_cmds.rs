@@ -568,6 +568,28 @@ fn doc_pixels_equal(a: &Document, b: &Document) -> bool {
         && *duotone == b.duotone
 }
 
+/// Whether `a` and `b` composite to the same pixels: they differ at most in fields the
+/// compositor never reads (selection, guides, paths, names, …), by the same classification as
+/// [`step_damage`] but without computing any bounds. Cheap: pixels compare by tile pointer.
+/// Conservative (`false`) past a nesting depth no real document reaches.
+pub fn same_pixels(a: &Document, b: &Document) -> bool {
+    fn walk(xs: &[Layer], ys: &[Layer], depth: usize) -> bool {
+        depth < 256
+            && xs.len() == ys.len()
+            && xs.iter().zip(ys).all(|(x, y)| {
+                x.video.is_none()
+                    && y.video.is_none()
+                    && layer_pixels_equal(x, y)
+                    && match (x.children(), y.children()) {
+                        (Some(xc), Some(yc)) => walk(xc, yc, depth + 1),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            })
+    }
+    doc_pixels_equal(a, b) && walk(&a.layers, &b.layers, 0)
+}
+
 /// Pixels a single history step can have changed between `a` and `b` (the documents on either
 /// side of an undo or redo): the union of the change bounds of every layer whose pixels
 /// differ, so undoing a local edit recomposites only that area instead of the whole canvas.

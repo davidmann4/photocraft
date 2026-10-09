@@ -681,6 +681,43 @@ fn damage_is_reported_for_strokes_only() {
 }
 
 #[test]
+fn edits_that_change_no_pixels_report_empty_damage() {
+    // A new selection must not recomposite the canvas (#1773: seconds on large documents).
+    let mut s = session_with_doc();
+    let points = json!([[2, 2], [40, 3], [30, 30], [5, 25]]);
+    s.execute("select.lasso", json!({"points": points, "mode": "replace"})).unwrap();
+    assert_eq!(s.active().unwrap().last_damage, Some(photocraft_geom::Rect::EMPTY));
+    s.execute("select.inverse", json!({})).unwrap();
+    assert_eq!(s.active().unwrap().last_damage, Some(photocraft_geom::Rect::EMPTY));
+    s.execute("select.deselect", json!({})).unwrap();
+    assert_eq!(s.active().unwrap().last_damage, Some(photocraft_geom::Rect::EMPTY));
+    // Anything that composites differently still recomposites.
+    s.execute("layer.new.layer", json!({})).unwrap();
+    assert_eq!(s.active().unwrap().last_damage, None);
+    s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    assert_ne!(s.active().unwrap().last_damage, Some(photocraft_geom::Rect::EMPTY));
+}
+
+#[test]
+fn same_pixels_ignores_the_selection_but_not_layers() {
+    let mut s = session_with_doc();
+    let a = s.active().unwrap().doc.clone();
+    s.execute("select.all", json!({})).unwrap();
+    let b = s.active().unwrap().doc.clone();
+    assert!(layer_multi_cmds::same_pixels(&a, &b));
+    s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    assert!(!layer_multi_cmds::same_pixels(&b, &s.active().unwrap().doc));
+    // A pathologically deep group nest is treated as changed (bounded walk), never a crash.
+    let mut deep = (*b).clone();
+    let mut l = photocraft_doc::Layer::group("g", Vec::new());
+    for _ in 0..300 {
+        l = photocraft_doc::Layer::group("g", vec![l]);
+    }
+    deep.layers.push(l);
+    assert!(!layer_multi_cmds::same_pixels(&deep, &deep.clone()));
+}
+
+#[test]
 fn integer_params_accept_json_floats() {
     // UIs send coordinates as floats (e.g. 12.0); every integer parameter must accept them.
     let mut s = session_with_doc();
