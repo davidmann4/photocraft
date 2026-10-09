@@ -691,9 +691,9 @@ fn edits_that_change_no_pixels_report_empty_damage() {
     assert_eq!(s.active().unwrap().last_damage, Some(photocraft_geom::Rect::EMPTY));
     s.execute("select.deselect", json!({})).unwrap();
     assert_eq!(s.active().unwrap().last_damage, Some(photocraft_geom::Rect::EMPTY));
-    // Anything that composites differently still recomposites.
+    // A new empty layer draws nothing either (#1771); filling it does recomposite.
     s.execute("layer.new.layer", json!({})).unwrap();
-    assert_eq!(s.active().unwrap().last_damage, None);
+    assert_eq!(s.active().unwrap().last_damage, Some(photocraft_geom::Rect::EMPTY));
     s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
     assert_ne!(s.active().unwrap().last_damage, Some(photocraft_geom::Rect::EMPTY));
 }
