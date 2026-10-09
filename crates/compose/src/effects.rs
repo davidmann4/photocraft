@@ -59,6 +59,23 @@ pub fn margin(layer: &Layer) -> i32 {
 /// Maximum distance (px) an effect is rendered from the layer's shape.
 pub const MAX_REACH: f32 = 512.0;
 
+/// Whether every enabled effect's maps are local: each map pixel depends only on the shape
+/// within [`margin`] of it (shifts, chamfer distances compared with a size, tent blurs), so
+/// maps built over a part of the layer's region padded by twice the margin equal the
+/// whole-region maps over that part (#1909). Not local: gradient strokes (laid out over the whole
+/// shape's extent), Precise glows and chiselled bevels (exact Euclidean distances, whose f32
+/// arithmetic depends on where the region starts) and noise (it speckles any coverage above
+/// zero, so it would pick up the blur's float noise, which depends on where the region starts).
+pub(crate) fn maps_are_local(layer: &Layer) -> bool {
+    layer.effects.items.iter().filter(|e| e.enabled()).all(|e| match e {
+        Effect::Stroke(s) => !matches!(s.paint, FxPaint::Gradient(_)),
+        Effect::DropShadow(s) | Effect::InnerShadow(s) => s.noise <= 0.0,
+        Effect::OuterGlow(g) | Effect::InnerGlow(g) => g.technique != GlowTechnique::Precise && g.noise <= 0.0,
+        Effect::BevelEmboss(b) => b.technique == BevelTechnique::Smooth,
+        _ => true,
+    })
+}
+
 /// A single-channel map over a rectangle.
 #[derive(Clone)]
 struct Map {
