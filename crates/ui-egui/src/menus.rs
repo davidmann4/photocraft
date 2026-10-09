@@ -21,6 +21,7 @@ pub const TOP_MENUS: [&str; 10] = ["File", "Edit", "Image", "Layer", "Type", "Se
 
 /// UI-level commands (handled by the shell rather than the engine): id, label, menu, shortcut.
 pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
+    ("ui.symmetryTransform", "Transform Symmetry", &[], None),
     ("file.open", "Open…", &["File"], Some("Cmd+O")),
     ("file.save", "Save", &["File"], Some("Cmd+S")),
     ("file.saveAs", "Save As…", &["File"], Some("Cmd+Shift+S")),
@@ -135,6 +136,9 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
 
 /// [`invoke`] without the unsaved-changes prompt, for once the user has already answered it.
 pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    if id == "ui.symmetryTransform" {
+        return crate::symmetry_ui::begin(app).map(|_| Value::Null);
+    }
     // A pending Pen anchor is gesture state; Edit › Undo must match the keyboard.
     if id == "edit.undo" && crate::vector_ui::pen_undo_last_point(app) {
         return Ok(Value::Null);
@@ -507,6 +511,9 @@ fn open_path(app: &mut PhotocraftApp, path: &str) -> Result<Value, String> {
 }
 
 pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
+    if id == "ui.symmetryTransform" {
+        return crate::symmetry_ui::can_transform(app);
+    }
     // Draft Pen points can be undone even when the document has no History entries.
     if id == "edit.undo" && app.ui.pen.as_ref().is_some_and(|pen| !pen.knots.is_empty()) {
         return true;
@@ -1177,8 +1184,7 @@ fn render_level_rows(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, click
             }
             shown_subs.push(name);
             let child: Vec<&MenuItem> = items.iter().copied().filter(|c| c.path.len() > depth && c.path[depth] == name).collect();
-            let any_enabled = child.iter().any(|c| c.enabled && c.label != "---");
-            let enabled = any_enabled || !child.is_empty();
+            let enabled = submenu_enabled(&child);
             ui.add_enabled_ui(enabled, |ui| {
                 nav.row(ui, depth - 1, enabled, None, |ui, nav| {
                     let r = ui.menu_button(crate::i18n::tr(lang, name), |ui| render_level(ui, &child, depth + 1, clicked, nav));
@@ -1192,6 +1198,12 @@ fn render_level_rows(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, click
             last_was_sep = false;
         }
     }
+}
+
+/// A submenu header is enabled only while some item under it (at any depth) can run, so a
+/// submenu of greyed items is greyed too instead of opening onto them (#1976).
+fn submenu_enabled(children: &[&MenuItem]) -> bool {
+    children.iter().any(|c| c.enabled && c.label != "---")
 }
 
 /// The command a menu click runs: ⌥ + Merge Down / Merge Layers / Merge Visible keep the
@@ -1230,6 +1242,23 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn submenu_header_is_disabled_when_every_item_is() {
+        let item = |label: &str, enabled: bool| MenuItem {
+            id: label.into(),
+            label: label.into(),
+            path: vec!["File".into(), "Export".into()],
+            shortcut: None,
+            enabled,
+            checked: None,
+            color: None,
+        };
+        let (off, on, sep) = (item("Off", false), item("On", true), item("---", true));
+        assert!(!submenu_enabled(&[]));
+        assert!(!submenu_enabled(&[&off, &sep]));
+        assert!(submenu_enabled(&[&off, &on]));
+    }
 
     #[test]
     fn live_lookup_finds_engine_and_shell_commands() {

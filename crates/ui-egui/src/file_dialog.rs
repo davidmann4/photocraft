@@ -104,7 +104,8 @@ impl PhotocraftApp {
         Ok(json!({ "fileDialog": kind }))
     }
 
-    /// Ask where to save: `then` gets the chosen path.
+    /// Ask where to save: `then` gets the chosen path, with a lowercase extension when
+    /// Preferences ▸ File Handling › Lowercase Extension is on (its default).
     pub(crate) fn pick_save(&mut self, suggested: &str, then: impl FnOnce(&mut Self, String) -> Result<Value, String> + 'static) -> Result<Value, String> {
         let mut suggested = std::path::PathBuf::from(suggested);
         // Export dialogs usually provide only a file name. Start beside the source document,
@@ -115,9 +116,22 @@ impl PhotocraftApp {
             suggested = dir.join(suggested);
         }
         self.ask_file(FileDialogRequest::Save { suggested: suggested.to_string_lossy().into_owned() }, move |app, answer| match answer {
-            FileDialogAnswer::SaveTo(path) => then(app, path),
+            FileDialogAnswer::SaveTo(path) => then(app, Self::lowercased_extension(app, path)),
             _ => Err(UNEXPECTED.into()),
         })
+    }
+
+    /// `X.PSD` → `X.psd`, only the extension: the stem and the folders keep the user's spelling.
+    fn lowercased_extension(app: &PhotocraftApp, path: String) -> String {
+        if !app.session.prefs().file_handling.lowercase_extension {
+            return path;
+        }
+        let p = std::path::Path::new(&path);
+        let Some(ext) = p.extension().and_then(|e| e.to_str()) else { return path };
+        if ext.bytes().all(|b| !b.is_ascii_uppercase()) {
+            return path;
+        }
+        p.with_extension(ext.to_ascii_lowercase()).to_string_lossy().into_owned()
     }
 
     /// Ask for a file a command reads (a script, notes, a placed image, presets): `then` gets its

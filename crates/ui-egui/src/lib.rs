@@ -133,6 +133,7 @@ pub mod stroke_trail;
 pub mod stroke_ui;
 pub mod stylus;
 pub mod swatches_ui;
+pub mod symmetry_ui;
 mod tab_strip;
 pub mod theme;
 pub mod tiff_options_ui;
@@ -682,6 +683,9 @@ impl PhotocraftApp {
     }
 
     fn run_command(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if matches!(id, "paint.setSymmetry" | "paint.symmetryFromPath" | "paint.symmetryDisable") {
+            self.ui.symmetry_transform = None;
+        }
         let clip_read = std::mem::take(&mut self.clip_read_for_paste);
         if self.automation_input
             && let Some(authorize) = self.services.automation_command.as_ref()
@@ -1614,13 +1618,19 @@ impl PhotocraftApp {
 
     /// If the OS clipboard holds an image that isn't the one we put there, make it the session
     /// clipboard (so ⌘V pastes screenshots and images copied in other apps, like Photoshop).
-    /// Returns true when a new external image was imported.
+    /// Returns true when a new external image was imported. Once the OS clipboard no longer holds
+    /// the image we mirrored or imported (text or a file was copied since), that image is stale:
+    /// it is dropped rather than pasted.
     pub(crate) fn import_os_clipboard(&mut self) -> bool {
         let Some(get) = self.services.clipboard_get_image.as_mut() else { return false };
-        let Some((w, h, bytes)) = get() else { return false };
-        if w == 0 || h == 0 || bytes.len() != w as usize * h as usize * 4 {
+        let image = get().filter(|(w, h, bytes)| *w > 0 && *h > 0 && bytes.len() == *w as usize * *h as usize * 4);
+        let Some((w, h, bytes)) = image else {
+            if self.os_clip_sig.take().is_some() {
+                self.session.clipboard = None;
+                self.clip_external = false;
+            }
             return false;
-        }
+        };
         let sig = clip_signature(w, h, &bytes);
         if self.os_clip_sig == Some(sig) && self.session.clipboard.is_some() {
             return false;
@@ -1691,6 +1701,12 @@ mod clipboard_tests {
         assert_eq!((w, h, px.len()), (8, 4, 8 * 4 * 4));
         // Our own image comes back unchanged (no re-import, keeps the original position).
         assert!(!app.import_os_clipboard());
+        // Text copied elsewhere replaces our image: nothing to paste, not the stale image.
+        let ours = os.lock().unwrap().take();
+        assert!(!app.import_os_clipboard());
+        assert!(app.session.clipboard.is_none());
+        *os.lock().unwrap() = ours;
+        app.run("edit.copy", serde_json::json!({})).unwrap();
         // Another app puts a 3×2 red image on the clipboard: ⌘V pastes it.
         *os.lock().unwrap() = Some((3, 2, [255u8, 0, 0, 255].repeat(6)));
         app.run("edit.paste", serde_json::json!({})).unwrap();

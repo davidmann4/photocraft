@@ -256,8 +256,10 @@ pub fn pointer_up(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2]) {
     let (w, h) = ((end[0] - start[0]).abs(), (end[1] - start[1]).abs());
     let min = 4.0 / app.current_zoom().max(0.01) as f64;
     let o = app.ui.tool_options.clone();
+    // Preferences ▸ Type: "Fill new type layers with placeholder text" (on by default).
+    let text = if app.session.prefs().type_.fill_new_type_layers_with_placeholder { PLACEHOLDER } else { "" };
     let mut p = json!({
-        "text": PLACEHOLDER,
+        "text": text,
         "orientation": if app.ui.tool == crate::state::Tool::VerticalType { "vertical" } else { "horizontal" },
         "font": o.type_font,
         "fontStyle": o.type_style,
@@ -280,7 +282,7 @@ pub fn pointer_up(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2]) {
             let _ = app.run("type.edit", json!({"layer": id, "antialias": o.type_aa, "coalesce": key}));
         }
         // Like Photoshop: the placeholder is selected, so typing replaces it.
-        let n = PLACEHOLDER.chars().count();
+        let n = text.chars().count();
         app.ui.text_edit = Some(TextEdit { layer: id, caret: n, anchor: 0, session: key, created: true, dragging: false, resize: None, preedit: None });
     }
 }
@@ -526,7 +528,10 @@ pub fn handle_keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
                     Key::Enter if m.command => commit(app),
                     Key::Enter => insert(app, "\n"),
                     Key::Escape if crate::type_transform::active(app) => crate::type_transform::cancel_drag(app),
-                    Key::Escape => commit(app),
+                    // Preferences ▸ Type: with "Use Escape to Commit" off, Escape cancels the
+                    // session (undoes it, removing a just-created layer) like the Cancel button.
+                    Key::Escape if app.session.prefs().type_.use_esc_to_commit => commit(app),
+                    Key::Escape => cancel(app),
                     Key::A if m.command => {
                         if let Some(e) = app.ui.text_edit.as_mut() {
                             e.anchor = 0;
@@ -714,11 +719,12 @@ fn weight_name(w: f32) -> &'static str {
     }
 }
 
-/// Style names ("Regular", "Bold Italic", …) available for a family.
+/// Style names available for a family: each face's actual OpenType subfamily (including numeric
+/// and nonstandard ones), plus the standard weights a variable face's `wght` axis covers.
 pub fn styles(family: &str) -> Vec<String> {
-    let faces = photocraft_text::shared().lock().map(|mut e| e.fonts.faces(family)).unwrap_or_default();
+    let faces = photocraft_text::shared().lock().unwrap_or_else(|e| e.into_inner()).fonts.faces(family);
     let v = style_names(&faces);
-    if v.is_empty() { vec![tl!("Regular").into()] } else { v }
+    if v.is_empty() { vec!["Regular".into()] } else { v }
 }
 
 /// [`styles`] of these faces, lightest first. A variable face reports only its default instance
@@ -733,15 +739,31 @@ fn style_names(faces: &[photocraft_text::FaceInfo]) -> Vec<String> {
         };
         (weight.round() as i32, italic, name)
     };
-    let mut v: Vec<(i32, bool, String)> = faces.iter().map(|f| label(f.weight, f.italic)).collect();
+    let mut v: Vec<(i32, bool, String)> = faces.iter().map(|f| (f.weight.round() as i32, f.italic, f.style.clone())).collect();
     for f in faces {
         if let Some((_, min, _, max)) = f.axes.iter().find(|a| a.0 == "wght") {
             v.extend((100..=900).step_by(100).map(|w| w as f32).filter(|w| (*min..=*max).contains(w)).map(|w| label(w, f.italic)));
         }
     }
     v.sort();
-    v.dedup_by(|a, b| a.2 == b.2);
-    v.into_iter().map(|x| x.2).collect()
+    let mut names: Vec<String> = Vec::new();
+    for (_, _, name) in v {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// PSD text can identify a face only by its PostScript name. Show its real subfamily too.
+pub(crate) fn selected_style(style: &photocraft_doc::text::CharStyle) -> String {
+    if let Some(ps) = &style.postscript_name {
+        let faces = photocraft_text::shared().lock().unwrap_or_else(|e| e.into_inner()).fonts.faces(&style.font_family);
+        if let Some(face) = faces.into_iter().find(|f| f.postscript_name.as_ref() == Some(ps)) {
+            return face.style;
+        }
+    }
+    if style.font_style.is_empty() { if style.italic { "Italic".into() } else { "Regular".into() } } else { style.font_style.clone() }
 }
 
 /// Localized style label for the dropdown. The raw string stays the engine's `fontStyle` key;
@@ -895,7 +917,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         let run = tl.char_runs().into_iter().next().map(|r| r.style);
         // The size at the selection (else the first run), as the layer shows it (#124).
         let size = styles_at(app).map_or(tl.size_pt, |(c, _)| c.size_pt) * shown_scale(app);
-        Some((tl.font_family.clone(), run.as_ref().map(|s| s.font_style.clone()).unwrap_or_default(), size, styles_at(app).map_or(tl.color, |(c, _)| c.color)))
+        Some((tl.font_family.clone(), run.as_ref().map(selected_style).unwrap_or_default(), size, styles_at(app).map_or(tl.color, |(c, _)| c.color)))
     });
     let o = app.ui.tool_options.clone();
     let (mut fam, mut style, mut size) = match &shown {
@@ -1221,7 +1243,7 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
             }
         });
         row(ui, &mut |ui| {
-            let mut style = if c.font_style.is_empty() { "Regular".to_string() } else { c.font_style.clone() };
+            let mut style = selected_style(&c);
             let opts: Vec<(String, String)> = styles(&fam).into_iter().map(|s| (s.clone(), style_label(&s))).collect();
             let opts_ref: Vec<(String, &str)> = opts.iter().map(|(a, b)| (a.clone(), b.as_str())).collect();
             if crate::widgets::dropdown(ui, "props-type-style", &mut style, &opts_ref, full) {
@@ -1511,6 +1533,22 @@ mod tests {
         commit(&mut app);
         let doc = &app.session.active().unwrap().doc;
         assert_eq!(doc.layers.last().unwrap().name, "Héllo world");
+        assert!(app.ui.text_edit.is_none());
+    }
+
+    /// Preferences ▸ Type ▸ Fill new type layers with placeholder text: off, a click creates an
+    /// empty layer (nothing selected) and committing without typing removes it again.
+    #[test]
+    fn placeholder_preference_controls_new_type_layer_text() {
+        let mut app = app();
+        app.run("prefs.set", json!({"path": "type.fillNewTypeLayersWithPlaceholder", "value": false})).unwrap();
+        pointer_up(&mut app, [50.0, 100.0], [50.0, 100.0]);
+        let ed = app.ui.text_edit.clone().unwrap();
+        assert_eq!((ed.anchor, ed.caret), (0, 0), "nothing to select");
+        assert_eq!(layer_text(&app), "");
+        assert_eq!(app.session.active().unwrap().doc.layers.len(), 2, "the layer was created");
+        commit(&mut app);
+        assert_eq!(app.session.active().unwrap().doc.layers.len(), 1, "an empty type layer is removed on commit");
         assert!(app.ui.text_edit.is_none());
     }
 
