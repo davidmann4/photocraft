@@ -513,6 +513,7 @@ fn build() -> Vec<CommandSpec> {
                 *active = Some(id);
                 Ok(id)
             })?;
+            crate::layer_multi_cmds::note_inert_insert(s, id);
             Ok(json!({ "layer": id.0 }))
         }),
         cmd!("layer.new.group", "Group…", ["Layer", "New"], None, r##"{"name":str?}"##, has_doc, |s, p| {
@@ -522,6 +523,7 @@ fn build() -> Vec<CommandSpec> {
                 *active = Some(id);
                 Ok(id)
             })?;
+            crate::layer_multi_cmds::note_inert_insert(s, id);
             Ok(json!({ "layer": id.0 }))
         }),
         cmd!(

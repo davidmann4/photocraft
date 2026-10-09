@@ -637,7 +637,8 @@ fn translate_moves_pixels_and_respects_locks() {
 fn damage_is_reported_for_strokes_only() {
     let mut s = session_with_doc();
     s.execute("layer.new.layer", json!({})).unwrap();
-    assert_eq!(s.active().unwrap().last_damage, None);
+    // A new empty layer changes no pixels (#1771).
+    assert_eq!(s.active().unwrap().last_damage, Some(photocraft_geom::Rect::EMPTY));
     s.execute("paint.stroke", json!({"points": [[10, 10], [20, 10]], "size": 4})).unwrap();
     let d = s.active().unwrap().last_damage.unwrap();
     assert!(d.contains(15, 10) && d.width() < 30);
