@@ -370,6 +370,10 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if editing {
         return;
     }
+    // Crop tool showing a box: O cycles its overlay, ⇧O the overlay's orientation (#1919).
+    if crate::crop_overlay::keys(app, ctx) {
+        return;
+    }
     // Single-key tools (no modifiers). D and X (`tools.defaultColors` / `tools.swapColors`) and the
     // brush keys [ ] ⇧[ ⇧] (`tools.decreaseBrushSize`…) are commands, dispatched above with any
     // Keyboard Shortcuts override.

@@ -2992,8 +2992,9 @@ fn marching_ants(painter: &egui::Painter, r: Rect, time: f64) {
     }
 }
 
-/// Photoshop crop overlay: dimmed outside, bright frame, rule-of-thirds grid, corner and edge handles.
-fn crop_overlay(painter: &egui::Painter, r: Rect) {
+/// Photoshop crop overlay: dimmed outside, bright frame, the composition `guides` (unit-square
+/// polylines, `crop_overlay::guides`), corner and edge handles.
+fn crop_overlay(painter: &egui::Painter, r: Rect, guides: &[crate::crop_overlay::Polyline]) {
     let clip = painter.clip_rect();
     let dim = Color32::from_black_alpha(130);
     for band in [
@@ -3005,13 +3006,7 @@ fn crop_overlay(painter: &egui::Painter, r: Rect) {
         painter.rect_filled(band, 0.0, dim);
     }
     painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Middle);
-    let thin = Stroke::new(1.0, Color32::from_white_alpha(90));
-    for i in 1..3 {
-        let fx = r.left() + r.width() * i as f32 / 3.0;
-        let fy = r.top() + r.height() * i as f32 / 3.0;
-        painter.line_segment([egui::pos2(fx, r.top()), egui::pos2(fx, r.bottom())], thin);
-        painter.line_segment([egui::pos2(r.left(), fy), egui::pos2(r.right(), fy)], thin);
-    }
+    draw_crop_guides(painter, guides, |a, b| r.min + r.size() * vec2(a, b));
     let h = Stroke::new(3.0, Color32::WHITE);
     let l = 14.0f32.min(r.width() / 3.0).min(r.height() / 3.0);
     for (c, dx, dy) in [(r.left_top(), 1.0, 1.0), (r.right_top(), -1.0, 1.0), (r.left_bottom(), 1.0, -1.0), (r.right_bottom(), -1.0, -1.0)] {
@@ -3028,7 +3023,7 @@ fn crop_overlay(painter: &egui::Painter, r: Rect) {
 
 /// [`crop_overlay`] for a turned frame (or a rotated view): `q` is the frame's top-left, top-right,
 /// bottom-right and bottom-left corner on screen, a parallelogram.
-fn crop_overlay_turned(painter: &egui::Painter, q: [Pos2; 4]) {
+fn crop_overlay_turned(painter: &egui::Painter, q: [Pos2; 4], guides: &[crate::crop_overlay::Polyline]) {
     let (u, v) = (q[1] - q[0], q[3] - q[0]);
     let (lu, lv) = (u.length(), v.length());
     if !(lu.is_finite() && lv.is_finite()) || lu < 1e-3 || lv < 1e-3 {
@@ -3052,12 +3047,7 @@ fn crop_overlay_turned(painter: &egui::Painter, q: [Pos2; 4]) {
     }
     painter.add(egui::Shape::mesh(mesh));
     painter.add(egui::Shape::closed_line(q.to_vec(), Stroke::new(1.0, Color32::WHITE)));
-    let thin = Stroke::new(1.0, Color32::from_white_alpha(90));
-    for i in 1..3 {
-        let f = i as f32 / 3.0;
-        painter.line_segment([at(f, 0.0), at(f, 1.0)], thin);
-        painter.line_segment([at(0.0, f), at(1.0, f)], thin);
-    }
+    draw_crop_guides(painter, guides, at);
     let h = Stroke::new(3.0, Color32::WHITE);
     let l = 14.0f32.min(lu / 3.0).min(lv / 3.0);
     let (du, dv) = (u / lu, v / lv);
@@ -3069,6 +3059,14 @@ fn crop_overlay_turned(painter: &egui::Painter, q: [Pos2; 4]) {
     let (lx, ly) = (l.min(lu / 4.0) / 2.0, l.min(lv / 4.0) / 2.0);
     for (c, e) in [(at(0.5, 0.0), du * lx), (at(0.5, 1.0), du * lx), (at(0.0, 0.5), dv * ly), (at(1.0, 0.5), dv * ly)] {
         painter.line_segment([c - e, c + e], h);
+    }
+}
+
+/// The crop overlay's guides, each unit-square point placed on screen by `at`.
+fn draw_crop_guides(painter: &egui::Painter, guides: &[crate::crop_overlay::Polyline], at: impl Fn(f32, f32) -> Pos2) {
+    let thin = Stroke::new(1.0, Color32::from_white_alpha(90));
+    for l in guides {
+        painter.add(egui::Shape::line(l.iter().map(|p| at(p[0], p[1])).collect(), thin));
     }
 }
 
@@ -3222,9 +3220,10 @@ fn draw_tool_state(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform,
         let deg = crate::crop_ui::angle(app);
         if deg == 0.0 && xf.rotation == 0.0 {
             let r = Rect::from_two_pos(xf.to_screen(c[0] as f32, c[1] as f32), xf.to_screen(c[2] as f32, c[3] as f32));
-            crop_overlay(painter, r);
+            crop_overlay(painter, r, &crate::crop_overlay::current_guides(app, r.width(), r.height()));
         } else {
-            crop_overlay_turned(painter, crate::crop_ui::corners(c, deg).map(|p| xf.to_screen(p[0] as f32, p[1] as f32)));
+            let q = crate::crop_ui::corners(c, deg).map(|p| xf.to_screen(p[0] as f32, p[1] as f32));
+            crop_overlay_turned(painter, q, &crate::crop_overlay::current_guides(app, q[0].distance(q[1]), q[0].distance(q[3])));
         }
         // The frame's angle beside the pointer while it turns (#1792).
         if let (Some(a), Some(h)) = (crate::crop_ui::turning(app), hover) {

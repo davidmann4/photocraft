@@ -74,7 +74,7 @@ pub enum Outcome {
 /// field's value is validated before the first one is applied, so a typo, an unknown field, a
 /// bad value or a bad nested key can't reply with success while nothing — or only half of it —
 /// changed (#412).
-pub const UI_SET_FIELDS: [&str; 25] = [
+pub const UI_SET_FIELDS: [&str; 28] = [
     "tool",
     "panels",
     "dock",
@@ -100,6 +100,9 @@ pub const UI_SET_FIELDS: [&str; 25] = [
     "eyedropperSampleSize",
     "eyedropperSample",
     "eyedropperRing",
+    "cropOverlay",
+    "cropOverlayShow",
+    "cropOverlayOrientation",
 ];
 
 /// Most clicks one `ui.click` may queue (#982). Each click is a press and a release that the app
@@ -326,6 +329,27 @@ fn dispatch(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) 
                     None => None,
                 };
                 let eyedropper_ring = bool_field(p, "eyedropperRing")?;
+                // The Crop tool's overlay menu (#1919).
+                let crop_overlay = match p.get("cropOverlay") {
+                    Some(v) => Some(v.as_str().and_then(crate::crop_overlay::CropOverlay::from_id).ok_or_else(|| {
+                        let ids: Vec<&str> = crate::crop_overlay::CropOverlay::ALL.iter().map(|k| k.id()).collect();
+                        format!("cropOverlay must be one of {}", ids.join(", "))
+                    })?),
+                    None => None,
+                };
+                let crop_overlay_show = match p.get("cropOverlayShow") {
+                    Some(v) => Some(
+                        v.as_str()
+                            .and_then(crate::crop_overlay::OverlayShow::from_id)
+                            .ok_or_else(|| "cropOverlayShow must be one of auto, always, never".to_string())?,
+                    ),
+                    None => None,
+                };
+                let crop_overlay_orientation = match uint_field(p, "cropOverlayOrientation")? {
+                    Some(o) if o < 4 => Some(o as u8),
+                    Some(_) => return Err("cropOverlayOrientation must be 0, 1, 2 or 3".into()),
+                    None => None,
+                };
                 let panels = merged_object(&app.ui.panels, p.get("panels"), "panels")?;
                 let mask_target = bool_field(p, "maskTarget")?;
                 let vector_mask_target = bool_field(p, "vectorMaskTarget")?;
@@ -425,6 +449,15 @@ fn dispatch(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) 
                 }
                 if let Some(ring) = eyedropper_ring {
                     app.ui.tool_options.eyedropper_ring = ring;
+                }
+                if let Some(k) = crop_overlay {
+                    app.ui.tool_options.crop_overlay = k;
+                }
+                if let Some(v) = crop_overlay_show {
+                    app.ui.tool_options.crop_overlay_show = v;
+                }
+                if let Some(o) = crop_overlay_orientation {
+                    app.ui.tool_options.crop_overlay_orientation = o;
                 }
                 if let Some(v) = panels {
                     app.ui.panels = v;
@@ -1161,6 +1194,38 @@ mod tests {
         let r = call(&mut app, &ctx, "ui.set", json!({"eyedropperSampleSize": 101, "eyedropperSample": "nope"}));
         assert_eq!(r["ok"], false, "{r}");
         assert_eq!(app.ui.tool_options.eyedropper_size, 1);
+    }
+
+    /// #1919: the Crop tool's overlay menu over the control channel, reported by `ui.inspect`.
+    #[test]
+    fn ui_set_drives_the_crop_overlay_options() {
+        use crate::crop_overlay::{CropOverlay, OverlayShow};
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let good =
+            call(&mut app, &ctx, "ui.set", json!({"tool": "crop", "cropOverlay": "goldenSpiral", "cropOverlayShow": "always", "cropOverlayOrientation": 2}));
+        assert_eq!(good["ok"], true, "{good}");
+        let o = &app.ui.tool_options;
+        assert_eq!((o.crop_overlay, o.crop_overlay_show, o.crop_overlay_orientation), (CropOverlay::GoldenSpiral, OverlayShow::Always, 2));
+        let seen = call(&mut app, &ctx, "ui.inspect", json!({}));
+        let t = &seen["result"]["toolOptions"];
+        assert_eq!(
+            (t["crop_overlay"].as_str(), t["crop_overlay_show"].as_str(), t["crop_overlay_orientation"].as_u64()),
+            (Some("goldenSpiral"), Some("always"), Some(2))
+        );
+        for bad in [
+            json!({"cropOverlay": "spiral"}),
+            json!({"cropOverlay": 1}),
+            json!({"cropOverlayShow": "sometimes"}),
+            json!({"cropOverlayOrientation": 4}),
+            json!({"cropOverlayOrientation": -1}),
+            json!({"cropOverlayOrientation": "1"}),
+            json!({"cropOverlay": "grid", "cropOverlayShow": "nope"}),
+        ] {
+            let r = call(&mut app, &ctx, "ui.set", bad.clone());
+            assert_eq!(r["ok"], false, "{bad}: {r}");
+        }
+        assert_eq!(app.ui.tool_options.crop_overlay, CropOverlay::GoldenSpiral, "a rejected call applies none of its fields");
     }
 
     #[test]

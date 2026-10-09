@@ -45,6 +45,7 @@ pub mod color_range_ui;
 pub mod comps_ui;
 pub mod control;
 pub mod credits;
+pub mod crop_overlay;
 pub mod crop_ui;
 pub mod dialog_blend_ui;
 pub mod dialogs;

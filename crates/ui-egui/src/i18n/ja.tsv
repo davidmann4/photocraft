@@ -3304,3 +3304,12 @@ fontWeight	Italic	斜体
 	Color to Alpha…	カラーを透明に…
 	Transparency Threshold	透明のしきい値
 	Opacity Threshold	不透明度のしきい値
+	Rule of Thirds	三分割法
+	Golden Ratio	黄金比
+	Golden Spiral	黄金螺旋
+	Auto Show Overlay	オーバーレイを自動表示
+	Always Show Overlay	オーバーレイを常に表示
+	Never Show Overlay	オーバーレイを表示しない
+	Cycle Overlay	オーバーレイを切り替え
+	Cycle Orientation	方向を切り替え
+	Set the overlay options for the Crop tool	切り抜きツールのオーバーレイオプションを設定

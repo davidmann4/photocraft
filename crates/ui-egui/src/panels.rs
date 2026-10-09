@@ -988,7 +988,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         if widgets::secondary_button(ui, tl!("Clear"), 0.0).clicked() {
                             o.crop_ratio.clear();
                         }
-                        let _ = icons::button(ui, "grid-3x3", 24.0, true, tl!("Overlay: Rule of Thirds"));
+                        crate::crop_overlay::options_button(o, ui);
                         widgets::checkbox(ui, &mut o.crop_delete, tl!("Delete Cropped Pixels"));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if icons::button(

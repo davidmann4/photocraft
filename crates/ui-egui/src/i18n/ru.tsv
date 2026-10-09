@@ -2552,3 +2552,13 @@ fontWeight	Italic	Курсив
 	Color to Alpha…	Цвет в альфа-канал…
 	Transparency Threshold	Порог прозрачности
 	Opacity Threshold	Порог непрозрачности
+	Rule of Thirds	Правило третей
+	Triangle	Треугольник
+	Golden Ratio	Золотое сечение
+	Golden Spiral	Золотая спираль
+	Auto Show Overlay	Показывать перекрытие автоматически
+	Always Show Overlay	Всегда показывать перекрытие
+	Never Show Overlay	Никогда не показывать перекрытие
+	Cycle Overlay	Сменить перекрытие
+	Cycle Orientation	Сменить ориентацию
+	Set the overlay options for the Crop tool	Задать параметры перекрытия для инструмента «Рамка»
