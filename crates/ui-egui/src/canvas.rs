@@ -2654,8 +2654,13 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             crate::type_transform::cursor(app, &ctx, &xf, p, mods)
         }) {
             ui.ctx().set_cursor_icon(c);
-        } else if let Some(c) = response.hover_pos().filter(|_| tool == Tool::Crop).and_then(|p| crate::crop_ui::cursor(app, xf.to_doc(p))) {
+        } else if let Some((p, c)) = response.hover_pos().filter(|_| tool == Tool::Crop).and_then(|p| Some((p, crate::crop_ui::cursor(app, xf.to_doc(p))?))) {
             ui.ctx().set_cursor_icon(c);
+            let d = xf.to_doc(p);
+            if let Some(k) = crate::crop_ui::turn_cursor_dir(app, d) {
+                let toward = xf.to_screen((d[0] + k[0] * 16.0) as f32, (d[1] + k[1] * 16.0) as f32) - p;
+                crate::crop_ui::draw_turn_cursor(&ctx, p, toward);
+            }
         } else if app.drag.as_ref().is_some_and(|d| d.sel_move.is_some())
             || response.hover_pos().is_some_and(|p| app.drag.is_none() && selection_drag_kind(app, tool, xf.to_doc(p), ui.input(|i| i.modifiers)).is_some())
         {

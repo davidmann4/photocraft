@@ -430,9 +430,64 @@ pub fn cursor(app: &PhotocraftApp, p: [f64; 2]) -> Option<CursorIcon> {
     Some(match h {
         Hit::Handle(hx, hy) => resize_icon(hx, hy, deg),
         Hit::Inside => CursorIcon::Move,
-        // Photoshop's curved two-headed arrow: turn the frame.
-        Hit::Outside => CursorIcon::Alias,
+        // Photoshop's curved two-headed arrow (`draw_turn_cursor`, from `turn_cursor_dir`).
+        Hit::Outside => CursorIcon::None,
     })
+}
+
+/// Where the turn cursor's arc bends at document point `p` (pointer outside the frame, or turning
+/// it): towards the frame corner of `p`'s quadrant, along the diagonal of the frame's own axes.
+/// As in Photoshop that gives four cursors, one per corner; they turn with the frame.
+pub fn turn_cursor_dir(app: &PhotocraftApp, p: [f64; 2]) -> Option<[f64; 2]> {
+    if app.ui.tool != Tool::Crop {
+        return None;
+    }
+    let r = app.ui.crop_rect.filter(|r| r.iter().all(|v| v.is_finite()))?;
+    let deg = angle(app);
+    let turning = match app.crop.drag {
+        Some(CropDrag::Rotate { .. }) => true,
+        Some(_) => false,
+        None => hit_turned(r, deg, p, tolerance(app)) == Hit::Outside,
+    };
+    if !turning || !(p[0].is_finite() && p[1].is_finite()) {
+        return None;
+    }
+    let c = center(r);
+    let local = turn(p, c, -deg);
+    let sx = if local[0] < c[0] { 1.0 } else { -1.0 };
+    let sy = if local[1] < c[1] { 1.0 } else { -1.0 };
+    Some(turn([sx * std::f64::consts::FRAC_1_SQRT_2, sy * std::f64::consts::FRAC_1_SQRT_2], [0.0, 0.0], deg))
+}
+
+/// Photoshop's crop turn cursor at screen point `p`: a short arc with an arrowhead at each end,
+/// curving round the frame corner that lies in screen direction `toward` (an original drawing, no
+/// proprietary cursor asset).
+pub fn draw_turn_cursor(ctx: &egui::Context, p: egui::Pos2, toward: egui::Vec2) {
+    let len = toward.length();
+    if !len.is_finite() || len < 1e-6 {
+        return;
+    }
+    let u = toward / len;
+    let tokens = crate::theme::Tokens::get(ctx);
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("crop-turn-cursor")));
+    const R: f32 = 12.0;
+    const HALF: f32 = 0.75;
+    let c = p + u * R;
+    let mid = (-u.y).atan2(-u.x);
+    let at = |a: f32| c + egui::vec2(a.cos(), a.sin()) * R;
+    let points: Vec<egui::Pos2> = (0..=16).map(|i| at(mid - HALF + 2.0 * HALF * i as f32 / 16.0)).collect();
+    painter.add(egui::Shape::line(points.clone(), egui::Stroke::new(3.5, tokens.shadow)));
+    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, tokens.accent_text)));
+    for (a, sign) in [(mid - HALF, -1.0f32), (mid + HALF, 1.0)] {
+        let tip = at(a) + egui::vec2(-a.sin(), a.cos()) * (sign * 2.0);
+        let tangent = egui::vec2(-a.sin(), a.cos()) * sign;
+        let normal = egui::vec2(a.cos(), a.sin());
+        painter.add(egui::Shape::convex_polygon(
+            vec![tip + tangent * 3.5, tip - tangent * 3.0 + normal * 3.5, tip - tangent * 3.0 - normal * 3.5],
+            tokens.accent_text,
+            egui::Stroke::new(1.0, tokens.shadow),
+        ));
+    }
 }
 
 /// The resize arrow for handle (`hx`, `hy`) of a frame turned `deg` degrees: the handle's outward
@@ -606,7 +661,7 @@ mod tests {
         let a = 22.0f64.to_radians();
         drag(&mut app, &[[150.0, 50.0], [70.0 + 80.0 * a.cos(), 50.0 + 80.0 * a.sin()]], SHIFT);
         assert_eq!(app.ui.crop_angle, 15.0);
-        assert_eq!(cursor(&app, [150.0, 50.0]), Some(CursorIcon::Alias), "outside: the rotate cursor");
+        assert_eq!(cursor(&app, [150.0, 50.0]), Some(CursorIcon::None), "outside: the drawn turn cursor");
         // Turning the untouched default frame makes it a real frame; a click outside it doesn't.
         let mut app = super::tests::app(SampleType::U8);
         ensure_frame(&mut app);
@@ -871,6 +926,30 @@ mod tests {
         assert!(empty.ui.crop_rect.is_none());
     }
 
+    /// #1792: outside the frame the turn cursor bends towards the corner of the pointer's quadrant
+    /// (four variants, as in Photoshop) and turns with the frame; no turn cursor inside or on a handle.
+    #[test]
+    fn turn_cursor_points_at_the_quadrant_corner() {
+        let mut app = app(SampleType::U8);
+        app.ui.crop_rect = Some([20.0, 20.0, 100.0, 60.0]);
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let near = |d: Option<[f64; 2]>, want: [f64; 2]| d.is_some_and(|d| (d[0] - want[0]).abs() < 1e-9 && (d[1] - want[1]).abs() < 1e-9);
+        assert!(near(turn_cursor_dir(&app, [0.0, 0.0]), [h, h]), "top-left: towards the top-left corner");
+        assert!(near(turn_cursor_dir(&app, [130.0, 5.0]), [-h, h]), "top-right");
+        assert!(near(turn_cursor_dir(&app, [130.0, 90.0]), [-h, -h]), "bottom-right");
+        assert!(near(turn_cursor_dir(&app, [5.0, 90.0]), [h, -h]), "bottom-left");
+        assert!(near(turn_cursor_dir(&app, [150.0, 30.0]), [-h, h]), "beside the right edge, upper half");
+        assert_eq!(turn_cursor_dir(&app, [60.0, 40.0]), None, "inside");
+        assert_eq!(turn_cursor_dir(&app, [20.0, 20.0]), None, "on a handle");
+        // A frame turned 45° turns the cursor with it: the diagonal becomes horizontal.
+        app.ui.crop_angle = 45.0;
+        assert!(near(turn_cursor_dir(&app, [0.0, 0.0]), [1.0, 0.0]), "{:?}", turn_cursor_dir(&app, [0.0, 0.0]));
+        app.ui.crop_angle = f64::NAN;
+        assert!(turn_cursor_dir(&app, [f64::NAN, 0.0]).is_none());
+        app.ui.tool = Tool::Brush;
+        assert_eq!(turn_cursor_dir(&app, [0.0, 0.0]), None);
+    }
+
     #[test]
     fn cursor_follows_the_frame() {
         let mut app = app(SampleType::U8);
@@ -880,7 +959,7 @@ mod tests {
         assert_eq!(cursor(&app, [100.0, 20.0]), Some(CursorIcon::ResizeNeSw));
         assert_eq!(cursor(&app, [60.0, 60.0]), Some(CursorIcon::ResizeVertical));
         assert_eq!(cursor(&app, [60.0, 40.0]), Some(CursorIcon::Move));
-        assert_eq!(cursor(&app, [150.0, 40.0]), Some(CursorIcon::Alias), "outside: turn the frame");
+        assert_eq!(cursor(&app, [150.0, 40.0]), Some(CursorIcon::None), "outside: the drawn turn cursor");
         app.ui.tool = Tool::Brush;
         assert_eq!(cursor(&app, [60.0, 40.0]), None);
     }
