@@ -130,6 +130,11 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
 
 /// [`invoke`] without the unsaved-changes prompt, for once the user has already answered it.
 pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    // Image › Crop while the Crop tool has a pending frame commits that frame (#1918).
+    if id == "image.crop" && crate::crop_ui::pending(app) {
+        crate::canvas::commit_crop(app);
+        return Ok(json!({"committed": true}));
+    }
     // Help › Discord, website, GitHub, Report an Issue.
     if let Some(url) = crate::links::url_for(id) {
         return Ok(crate::links::open(app, ctx, url));
@@ -489,7 +494,7 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
     if crate::enable_rules::disabled(app, id) {
         return false;
     }
-    // A pending crop greys File › New, Open and the Image menu, as in Photoshop (#1918).
+    // A pending crop greys what Photoshop greys during one (#1918).
     if crate::crop_ui::blocks(app, id) {
         return false;
     }

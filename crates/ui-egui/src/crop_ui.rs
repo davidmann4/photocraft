@@ -225,11 +225,39 @@ pub fn pending(app: &PhotocraftApp) -> bool {
         && (app.crop.doc.is_none() || app.crop.doc == app.session.active().map(|st| st.doc.id))
 }
 
-/// Menu commands Photoshop greys out while a crop is pending (#1918): File › New, Open…, Open As…,
-/// Open Recent and the whole Image menu, until the crop is committed or cancelled.
+/// Menu commands Photoshop greys out while a crop is pending (#1918), until it is committed or
+/// cancelled. Checked item by item in Photoshop 27.11: everything except Close, Save, Save As,
+/// Save a Copy; Undo, Redo, Toggle Last State, Search; Image › Crop (which commits the frame); the
+/// View menu but Proof Setup, Pixel Aspect Ratio (Correction), 32-bit Preview Options, Flip
+/// Horizontal and Screen Mode; the Window menu but Workspace and Adjustments; Help but System Info.
 pub fn blocks(app: &PhotocraftApp, id: &str) -> bool {
-    let gated = matches!(id, "file.new" | "file.open" | "file.openAs") || id.starts_with("file.openRecent.") || id.starts_with("image.");
-    gated && pending(app)
+    pending(app) && !available_while_pending(id)
+}
+
+fn available_while_pending(id: &str) -> bool {
+    if let Some(v) = id.strip_prefix("view.") {
+        let greyed = ["proofSetup.", "pixelAspectRatio", "thirtyTwoBitPreviewOptions", "flipHorizontal", "screenMode."];
+        return !greyed.iter().any(|g| v.starts_with(g));
+    }
+    if let Some(w) = id.strip_prefix("window.") {
+        return !(w.starts_with("workspace.") || w == "panel.adjustments");
+    }
+    if id.starts_with("help.") {
+        return id != "help.systemInfo";
+    }
+    matches!(
+        id,
+        "file.close"
+            | "file.save"
+            | "file.saveAs"
+            | "file.saveACopy"
+            | "file.exit"
+            | "edit.undo"
+            | "edit.redo"
+            | "edit.toggleLastState"
+            | "edit.search"
+            | "image.crop"
+    )
 }
 
 /// A pending crop belongs to the document it was drawn on (#1918): when another document becomes
@@ -655,28 +683,96 @@ mod tests {
         assert_eq!(app.session.active().map(|st| st.doc.size), Some(Size::new(300, 150)));
     }
 
-    /// #1918: as in Photoshop, File › New, Open and the Image menu are greyed out while a crop is
-    /// pending (not for the untouched default frame), and come back after commit or cancel.
+    /// #1918: as in Photoshop, a pending crop (not the untouched default frame) greys almost every
+    /// menu command; the ones Photoshop keeps stay available, and commit or cancel frees the rest.
+    /// Walks the whole menu catalog.
     #[test]
-    fn a_pending_crop_greys_new_open_and_the_image_menu() {
+    fn a_pending_crop_greys_the_menus_photoshop_greys() {
         let mut app = app(SampleType::U8);
-        let ids = ["file.new", "file.open", "file.openAs", "file.openRecent.0", "image.imageSize", "image.crop", "image.mode.grayscale"];
         ensure_frame(&mut app);
         assert!(app.crop.default_frame);
-        for id in ids {
-            assert!(!blocks(&app, id) && crate::menus::modal_allows(&app, id), "default frame: {id} stays available");
+        let ids: Vec<&str> = crate::menu_catalog::CATALOG.iter().map(|e| e.3).filter(|id| *id != "---").collect();
+        for id in &ids {
+            assert!(!blocks(&app, id), "default frame: {id} stays as it was");
         }
         drag(&mut app, &[[10.0, 10.0], [50.0, 40.0]], NONE);
         assert!(pending(&app));
-        for id in ids {
-            assert!(blocks(&app, id), "{id}");
-            assert!(!crate::menus::is_enabled(&app, id), "{id} greyed");
+        let kept = [
+            "file.close",
+            "file.save",
+            "file.saveAs",
+            "file.saveACopy",
+            "edit.undo",
+            "edit.redo",
+            "edit.toggleLastState",
+            "edit.search",
+            "image.crop",
+            "view.proofColors",
+            "view.gamutWarning",
+            "view.zoomIn",
+            "view.zoomOut",
+            "view.fitOnScreen",
+            "view.actualPixels",
+            "view.twoHundredPercent",
+            "view.printSize",
+            "view.extras",
+            "view.show.grid",
+            "view.rulers",
+            "view.snap",
+            "view.snapTo.guides",
+            "view.lockSlices",
+            "view.newGuide",
+            "window.arrange.tile",
+            "window.panel.layers",
+            "help.about",
+        ];
+        let greyed = [
+            "file.new",
+            "file.open",
+            "file.openAs",
+            "file.closeAll",
+            "file.revert",
+            "file.export.exportAs",
+            "file.placeEmbedded",
+            "file.automate.batch",
+            "file.scripts.browse",
+            "file.import.notes",
+            "file.fileInfo",
+            "file.print",
+            "edit.cut",
+            "edit.fill",
+            "edit.freeTransform",
+            "edit.colorSettings",
+            "edit.preferences.general",
+            "image.imageSize",
+            "image.mode.grayscale",
+            "layer.new.layer",
+            "select.all",
+            "filter.blur.gaussianBlur",
+            "view.proofSetup.workingCmyk",
+            "view.pixelAspectRatio.square",
+            "view.pixelAspectRatioCorrection",
+            "view.thirtyTwoBitPreviewOptions",
+            "view.flipHorizontal",
+            "view.screenMode.fullScreen",
+            "window.workspace.essentials",
+            "window.panel.adjustments",
+            "help.systemInfo",
+        ];
+        for id in kept {
+            assert!(!blocks(&app, id), "{id} stays available");
+        }
+        for id in greyed {
+            assert!(blocks(&app, id), "{id} is greyed");
+            assert!(!crate::menus::is_enabled(&app, id), "{id} greyed in the menus");
             assert!(!crate::menus::modal_allows(&app, id), "{id} refused over the menu gate");
         }
-        for id in ["file.save", "edit.undo", "layer.new.layer", "view.zoomIn", "select.all"] {
-            assert!(!blocks(&app, id), "{id} is not gated");
-        }
-        // Committing the crop still runs `image.crop` itself, and frees the menus again.
+        assert!(
+            ids.iter()
+                .filter(|id| id.starts_with("layer.") || id.starts_with("type.") || id.starts_with("select.") || id.starts_with("filter."))
+                .all(|id| blocks(&app, id))
+        );
+        // Committing still runs `image.crop` itself, and frees the menus again.
         crate::canvas::commit_crop(&mut app);
         assert_eq!(app.session.active().unwrap().doc.size, Size::new(40, 30));
         assert!(!pending(&app) && crate::menus::is_enabled(&app, "file.new"));
@@ -689,6 +785,17 @@ mod tests {
         drag(&mut app, &[[5.0, 5.0], [20.0, 20.0]], NONE);
         app.ui.tool = Tool::Brush;
         assert!(!blocks(&app, "file.new"));
+    }
+
+    /// Image › Crop with a pending crop commits the frame (the one Image item Photoshop keeps).
+    #[test]
+    fn image_crop_menu_commits_a_pending_crop() {
+        let mut app = app(SampleType::U8);
+        drag(&mut app, &[[10.0, 10.0], [50.0, 40.0]], NONE);
+        let ctx = egui::Context::default();
+        crate::menus::invoke(&mut app, &ctx, "image.crop", json!({})).unwrap();
+        assert_eq!(app.session.active().unwrap().doc.size, Size::new(40, 30));
+        assert!(app.ui.crop_rect.is_none() || app.crop.default_frame);
     }
 
     #[test]
