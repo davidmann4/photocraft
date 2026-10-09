@@ -227,6 +227,7 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
         };
         fields.insert(p.key, v);
     }
+    restore(app, command, spec.params, &mut fields);
     if command == "image.rotation.arbitrary" {
         straighten_defaults(app, &mut fields);
     }
@@ -241,6 +242,68 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
     }
     let id = app.ui.open_dialog(crate::state::DialogKind::Command, fields);
     Some(id)
+}
+
+/// Dialogs that show the document's own state (its light angle, colour table, profiles or proof
+/// setup) or name something new: they open from that, not from the values used last time.
+const NOT_REMEMBERED: &[&str] =
+    &["layer.layerStyle.globalLight", "image.mode.colorTable", "view.proofSetup", "edit.assignProfile", "edit.convertToProfile", "edit.definePattern"];
+
+/// Whether `command`'s dialog reopens with the values it was last applied with, as Photoshop's
+/// filter and Select › Modify dialogs do (kept across restarts in `prefs.dialogs`, #1757).
+pub fn remembers(command: &str) -> bool {
+    !NOT_REMEMBERED.contains(&command) && has_dialog(command)
+}
+
+/// A remembered value for a parameter of `kind` when it is still valid for it: numbers clamped to
+/// the range, choices still offered. Free text, documents and JSON inputs are never remembered.
+fn remembered_value(kind: &Kind, v: &Value) -> Option<Value> {
+    let number = |v: &Value| v.as_f64().filter(|x| x.is_finite());
+    match kind {
+        Kind::Range { min, max, .. } => {
+            let (x, lo, hi) = (number(v)?, f64::from(*min), f64::from(*max));
+            Some(json!(if lo <= hi { x.clamp(lo, hi) } else { x }))
+        }
+        Kind::Choice(options) => v.as_str().filter(|s| options.iter().any(|o| o == s)).map(|s| json!(s)),
+        Kind::Bool(_) => v.as_bool().map(|b| json!(b)),
+        Kind::Int { .. } => number(v).map(|x| json!(x.round().clamp(-30000.0, 30000.0) as i64)),
+        Kind::Grid(n) => {
+            let cells = v.as_array().filter(|a| a.len() == *n)?;
+            let cells: Option<Vec<i64>> = cells.iter().map(|c| number(c).map(|x| x.round().clamp(-999.0, 999.0) as i64)).collect();
+            cells.map(|c| json!(c))
+        }
+        Kind::Color(_) => v.as_str().filter(|s| crate::color_picker_ui::parse_hex(s).is_some()).map(|s| json!(s)),
+        Kind::Text | Kind::Document | Kind::Json => None,
+    }
+}
+
+/// Overlay the values `command`'s dialog was last applied with onto its defaults in `fields`.
+fn restore(app: &PhotocraftApp, command: &str, spec: &str, fields: &mut Map<String, Value>) {
+    if !remembers(command) {
+        return;
+    }
+    let Some(Value::Object(saved)) = app.session.prefs().dialogs.get(command) else { return };
+    for p in parse_spec(spec) {
+        if let Some(v) = saved.get(&p.key).and_then(|v| remembered_value(&p.kind, v)) {
+            fields.insert(p.key, v);
+        }
+    }
+}
+
+/// OK in a schema dialog: remember the values it applied for the next time it opens.
+pub fn remember(app: &mut PhotocraftApp, fields: &Map<String, Value>) {
+    // Plug-in dialogs carry their own spec under a shared command: not remembered.
+    if !fields.contains_key("__filter") || fields.contains_key("__spec") {
+        return;
+    }
+    let Some(command) = fields.get("__command").and_then(Value::as_str).filter(|c| remembers(c)) else { return };
+    let Some(spec) = photocraft_engine::commands::find(command).map(|c| c.params) else { return };
+    let kept: Map<String, Value> =
+        parse_spec(spec).into_iter().filter_map(|p| fields.get(&p.key).and_then(|v| remembered_value(&p.kind, v)).map(|v| (p.key, v))).collect();
+    let kept = Value::Object(kept);
+    if app.session.prefs().dialogs.get(command) != Some(&kept) {
+        app.session.prefs.edit(|p| p.dialogs.insert(command.to_string(), kept));
+    }
 }
 
 /// Arbitrary rotation starts at the angle that straightens the ruler line, when there is one.
