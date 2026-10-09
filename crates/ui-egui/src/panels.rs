@@ -1807,22 +1807,20 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         }
         actions.extend(footer_drop(ui, &group, footer_drag, "layer.groupLayers"));
         let adj = footer_menu_button(ui, "adjustment-layer", 26.0, tl!("Create new fill or adjustment layer"));
-        egui::Popup::menu(&adj).open_memory(footer_menu_right_click(&adj)).show(|ui| {
+        // Opens on the press like Photoshop's: drag onto an item and release to choose it (#2071).
+        crate::press_menu::show(&adj, |ui, menu| {
             ui.set_min_width(190.0);
             for c in photocraft_engine::command_specs().iter().filter(|c| c.id.starts_with("layer.newAdjustmentLayer.")) {
-                if ui.button(tl!(c.label).trim_end_matches('…')).clicked() {
+                if menu.item(ui, tl!(c.label).trim_end_matches('…')) {
                     actions.push((c.id.into(), json!({})));
-                    ui.close();
                 }
             }
             ui.separator();
-            if ui.button(tl!("Solid Color…")).clicked() {
+            if menu.item(ui, tl!("Solid Color…")) {
                 actions.push(("layer.newFillLayer.solidColor".into(), json!({})));
-                ui.close();
             }
-            if ui.button(tl!("Gradient…")).clicked() {
+            if menu.item(ui, tl!("Gradient…")) {
                 actions.push(("layer.newFillLayer.gradient".into(), json!({})));
-                ui.close();
             }
         });
         // Like Photoshop the button never replaces a mask (#2075): with a layer mask it adds a
@@ -1841,17 +1839,15 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             actions.push((cmd.into(), json!({})));
         }
         let fx = fx_button(ui, 26.0, tl!("Add a layer style"));
-        egui::Popup::menu(&fx).open_memory(footer_menu_right_click(&fx)).show(|ui| {
+        crate::press_menu::show(&fx, |ui, menu| {
             ui.set_min_width(180.0);
-            if ui.button(tl!("Blending Options…")).clicked() {
+            if menu.item(ui, tl!("Blending Options…")) {
                 crate::layer_style::open(app, None);
-                ui.close();
             }
             ui.separator();
             for &(kind, label) in crate::layer_style::KINDS {
-                if ui.button(format!("{}…", tl!(label))).clicked() {
+                if menu.item(ui, format!("{}…", tl!(label))) {
                     crate::layer_style::open(app, Some(kind));
-                    ui.close();
                 }
             }
         });
@@ -1913,18 +1909,6 @@ fn footer_label(command: &str) -> &'static str {
     }
 }
 
-/// A secondary click opens a Layers footer popup, as in Photoshop; a primary click still toggles
-/// it (the `Popup::menu` default this replaces).
-fn footer_menu_right_click(response: &egui::Response) -> Option<egui::SetOpenCommand> {
-    if response.secondary_clicked() {
-        Some(egui::SetOpenCommand::Bool(true))
-    } else if response.clicked() {
-        Some(egui::SetOpenCommand::Toggle)
-    } else {
-        None
-    }
-}
-
 /// The small down-arrow makes it clear that the footer icon expands into a menu.
 fn footer_menu_arrow(ui: &egui::Ui, rect: Rect) {
     let t = Tokens::get(ui.ctx());
@@ -1934,6 +1918,8 @@ fn footer_menu_arrow(ui: &egui::Ui, rect: Rect) {
 
 fn footer_menu_button(ui: &mut egui::Ui, icon: &str, size: f32, tip: &str) -> egui::Response {
     let response = icons::button(ui, icon, size, false, tip);
+    // Named for screen readers (and tests) after its tooltip.
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
     footer_menu_arrow(ui, response.rect);
     response
 }
@@ -1950,6 +1936,7 @@ fn fx_button(ui: &mut egui::Ui, size: f32, tip: &str) -> egui::Response {
     let g = ui.painter().layout_job(job);
     ui.painter().galley(r.center() - g.size() / 2.0, g, t.icon);
     footer_menu_arrow(ui, r);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
     resp.on_hover_text(tip)
 }
 
@@ -3840,48 +3827,6 @@ mod layer_drag_edge_scroll_tests {
         assert!(layer_drag_edge_scroll(Some(pos2(10.0, 2.0)), viewport, true, 0.016) > 0.0);
         assert!(layer_drag_edge_scroll(Some(pos2(10.0, 38.0)), viewport, true, 0.016) < 0.0);
         assert_eq!(layer_drag_edge_scroll(Some(pos2(10.0, 20.0)), viewport, true, 0.016), 0.0);
-    }
-}
-
-#[cfg(test)]
-mod footer_menu_tests {
-    use super::*;
-
-    // Exercise the actual egui pointer path, not just a mocked click flag.
-    #[test]
-    fn right_click_opens_footer_menu_and_primary_click_still_works() {
-        let ctx = egui::Context::default();
-        let rect = Rect::from_min_size(Pos2::ZERO, vec2(300.0, 100.0));
-        let pos = pos2(35.0, 20.0);
-        let frame = |events: Vec<egui::Event>| {
-            let mut opened = false;
-            let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(rect), events, ..Default::default() }, |ui| {
-                let response = ui.add_sized([100.0, 28.0], egui::Button::new("Footer menu"));
-                egui::Popup::menu(&response).open_memory(footer_menu_right_click(&response)).show(|ui| {
-                    opened = true;
-                    ui.label("Menu entry");
-                });
-            });
-            output.textures_delta.clear();
-            opened
-        };
-        frame(Vec::new());
-        frame(vec![
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed: true, modifiers: egui::Modifiers::NONE },
-        ]);
-        assert!(
-            frame(vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed: false, modifiers: egui::Modifiers::NONE }]),
-            "secondary release opens the popup"
-        );
-
-        // A primary click also remains supported by egui::Popup::menu.
-        frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
-        frame(vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
-        assert!(
-            frame(vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]),
-            "primary release still opens the popup"
-        );
     }
 }
 
