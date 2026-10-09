@@ -335,7 +335,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "brush.presets.move",
             "Move Brush",
-            r##"{"name":string,"group":string?=its group ("" = ungrouped),"folder":[name]? (nested folder path in the group, [] = the group itself)=before's folder, else its own if it stays in its group, else [],"before":name? (preset to land before, in that folder) | "index":n? (position in the group)=end of the folder} → {name, group, folder, index}"##,
+            r##"{"name":string,"group":string?=its group ("" = ungrouped),"folder":[name]? (nested folder names in the group, outermost first; [] = the group itself)=before's folder, else its own if it stays in its group, else [],"before":name? (preset to land before, in that folder) | "index":n? (position in the group)=end of the folder} → {name, group, folder, index}"##,
             move_preset
         ),
         spec!(

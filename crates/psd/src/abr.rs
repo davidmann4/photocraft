@@ -326,9 +326,16 @@ pub const MAX_FOLDER_DEPTH: usize = 32;
 /// Longest folder name kept (characters).
 const MAX_FOLDER_NAME: usize = 255;
 
-/// Reads the `phry` token stream into one folder path per preset token, in order. `None` (with a
-/// warning) when the section is unreadable.
-fn read_phry(data: &[u8], warnings: &mut Vec<String>) -> Option<Vec<Vec<String>>> {
+/// Most bytes of folder names held across all presets' folder paths (each name also counts its
+/// `String`). Presets past it are imported at the top level. 20,000 presets three folders deep
+/// with 20-character names take about 3 MB.
+const MAX_FOLDER_BYTES: usize = 16 << 20;
+
+/// Reads the `phry` token stream into one folder path per preset (`presets` of them, the count
+/// read from `desc`), in order. Paths are built only for those presets, within
+/// [`MAX_FOLDER_BYTES`]: a small section can't make the reader allocate more than that. `None`
+/// (with a warning) when the section is unreadable.
+fn read_phry(data: &[u8], presets: usize, warnings: &mut Vec<String>) -> Option<Vec<Vec<String>>> {
     let vd = match VersionedDescriptor::parse_prefix(data) {
         Ok((vd, _)) => vd,
         Err(e) => {
@@ -343,8 +350,10 @@ fn read_phry(data: &[u8], warnings: &mut Vec<String>) -> Option<Vec<Vec<String>>
     let mut stack: Vec<String> = Vec::new();
     // Folders opened past MAX_FOLDER_DEPTH: their `groupEnd`s close nothing on `stack`.
     let mut overflow = 0usize;
-    let mut out = Vec::new();
-    let (mut unbalanced, mut too_deep) = (false, false);
+    let mut out = Vec::with_capacity(presets.min(MAX_BRUSHES));
+    // Preset tokens seen (only counted past `presets`), and the bytes held by `out`'s paths.
+    let (mut listed, mut bytes) = (0usize, 0usize);
+    let (mut unbalanced, mut too_deep, mut too_big) = (false, false, false);
     for v in items {
         let Value::Descriptor(d) = v else { continue };
         if d.class_id.is("Grup") {
@@ -366,10 +375,21 @@ fn read_phry(data: &[u8], warnings: &mut Vec<String>) -> Option<Vec<Vec<String>>
                 unbalanced = true;
             }
         } else if d.class_id.is("preset") {
-            if out.len() >= MAX_BRUSHES {
-                break;
+            listed = listed.saturating_add(1);
+            if out.len() >= presets {
+                continue;
             }
-            out.push(stack.clone());
+            let size = stack.iter().map(|n| n.len().saturating_add(size_of::<String>())).fold(0usize, usize::saturating_add);
+            match bytes.checked_add(size).filter(|&b| b <= MAX_FOLDER_BYTES) {
+                Some(b) if !too_big => {
+                    bytes = b;
+                    out.push(stack.clone());
+                }
+                _ => {
+                    too_big = true;
+                    out.push(Vec::new());
+                }
+            }
         }
     }
     if unbalanced {
@@ -378,21 +398,23 @@ fn read_phry(data: &[u8], warnings: &mut Vec<String>) -> Option<Vec<Vec<String>>
     if too_deep {
         warnings.push(format!("brush folders nested deeper than {MAX_FOLDER_DEPTH} levels were merged into their parent"));
     }
+    if too_big {
+        warnings.push("brush folders (phry) too large; the remaining brushes were imported at the top level".into());
+    }
+    if listed != presets {
+        warnings.push(format!(
+            "brush folders (phry) list {listed} brushes but the file holds {presets}; {}",
+            if listed > presets { "the extra entries were ignored" } else { "the rest were imported at the top level" }
+        ));
+        out.resize(presets, Vec::new());
+    }
     Some(out)
 }
 
-/// Pairs the hierarchy's preset tokens with the presets read from `desc`, in order.
-fn apply_hierarchy(out: &mut AbrFile, folders: Option<Vec<Vec<String>>>) {
-    let Some(mut folders) = folders else { return };
-    let n = out.presets.len();
-    if folders.len() != n {
-        out.warnings.push(format!(
-            "brush folders (phry) list {} brushes but the file holds {n}; {}",
-            folders.len(),
-            if folders.len() > n { "the extra entries were ignored" } else { "the rest were imported at the top level" }
-        ));
-        folders.resize(n, Vec::new());
-    }
+/// Pairs the `phry` section's preset tokens with the presets read from `desc`, in order.
+fn apply_hierarchy(out: &mut AbrFile, phry: Option<&[u8]>) {
+    let Some(data) = phry else { return };
+    let Some(folders) = read_phry(data, out.presets.len(), &mut out.warnings) else { return };
     if folders.iter().any(|f| !f.is_empty()) {
         out.folders = folders;
     }
@@ -432,7 +454,8 @@ fn parse_v6(r: &mut Rd, out: &mut AbrFile) -> Result<()> {
                 Err(e) => out.warnings.push(format!("embedded patterns unreadable: {e}")),
             },
             b"desc" => read_desc(data, out),
-            b"phry" => hierarchy = read_phry(data, &mut out.warnings),
+            // Read once `desc` gives the preset count; `phry` may come first.
+            b"phry" => hierarchy = Some(data),
             // Tool presets: not needed for the brushes.
             b"lPdc" => {}
             k => out.warnings.push(format!("section {} ignored", String::from_utf8_lossy(k))),
@@ -729,6 +752,12 @@ mod tests {
     fn with_phry(n: usize, toks: &[Tok]) -> Vec<u8> {
         let presets: Vec<Descriptor> = (0..n).map(|i| named(&format!("B{i}"))).collect();
         let mut bytes = write_v6(2, &[], &[], &presets, false).unwrap();
+        section(&mut bytes, b"phry", &phry_bytes(toks));
+        bytes
+    }
+
+    /// A `phry` section body holding `toks`.
+    fn phry_bytes(toks: &[Tok]) -> Vec<u8> {
         let items = toks
             .iter()
             .map(|t| {
@@ -741,9 +770,7 @@ mod tests {
                 })
             })
             .collect();
-        let phry = VersionedDescriptor::new(Descriptor::new("null").with("hierarchy", Value::List(items)));
-        section(&mut bytes, b"phry", &phry.to_bytes());
-        bytes
+        VersionedDescriptor::new(Descriptor::new("null").with("hierarchy", Value::List(items))).to_bytes()
     }
 
     fn path(p: &[&str]) -> Vec<String> {
@@ -811,6 +838,46 @@ mod tests {
             b[i] ^= 0x5a;
             let _ = parse(&b);
         }
+    }
+
+    #[test]
+    fn phry_builds_paths_only_for_the_files_presets() {
+        use Tok::*;
+        // A few-KB section listing 100,000 deep presets for a file with 2: two paths are built.
+        let mut toks: Vec<Tok> = (0..MAX_FOLDER_DEPTH).map(|_| G("folder")).collect();
+        toks.extend((0..100_000).map(|_| P));
+        let mut warnings = Vec::new();
+        let folders = read_phry(&phry_bytes(&toks), 2, &mut warnings).unwrap();
+        assert_eq!(folders.len(), 2);
+        assert_eq!(folders.capacity(), 2);
+        assert_eq!(folders[1].len(), MAX_FOLDER_DEPTH);
+        assert!(warnings.iter().any(|w| w.contains("list 100000 brushes but the file holds 2")), "{warnings:?}");
+        // `phry` before `desc` still pairs with the file's presets.
+        let mut bytes = write_v6(2, &[], &[], &[named("a"), named("b")], false).unwrap();
+        let at = bytes.windows(8).position(|w| w == b"8BIMdesc").unwrap();
+        let mut phry = Vec::new();
+        section(&mut phry, b"phry", &phry_bytes(&[G("A"), P, E, P]));
+        bytes.splice(at..at, phry);
+        let f = parse(&bytes).unwrap();
+        assert_eq!(f.folders, vec![path(&["A"]), path(&[])]);
+        assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+    }
+
+    #[test]
+    fn phry_folder_paths_stay_within_their_byte_budget() {
+        use Tok::*;
+        // Thousands of presets under 32 folders of 255-character names would need ~27 MB of paths.
+        let long = "x".repeat(MAX_FOLDER_NAME);
+        let mut toks: Vec<Tok> = (0..MAX_FOLDER_DEPTH).map(|_| G(&long)).collect();
+        toks.extend((0..3_000).map(|_| P));
+        let mut warnings = Vec::new();
+        let folders = read_phry(&phry_bytes(&toks), 3_000, &mut warnings).unwrap();
+        assert_eq!(folders.len(), 3_000);
+        let held: usize = folders.iter().flatten().map(|n| n.len() + size_of::<String>()).sum();
+        assert!(held <= MAX_FOLDER_BYTES, "{held}");
+        assert_eq!(folders[0].len(), MAX_FOLDER_DEPTH);
+        assert!(folders[2_999].is_empty(), "past the budget: top level");
+        assert!(warnings.iter().any(|w| w.contains("too large")), "{warnings:?}");
     }
 
     #[test]
