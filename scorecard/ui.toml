@@ -50,9 +50,9 @@ note = "canvas.rs: Close/Others/All context menu with unsaved prompt; overflow, 
 [[item]]
 id = "UI-217-7"
 target = "Command palette shows recently run commands on an empty query"
-status = "missing"
+status = "done"
 issue = 217
-note = "palette.rs:83-108 fuzzy hits only"
+note = "palette.rs: note_recent from menus::invoke keeps the last 8 commands (dedup, newest first); an empty query lists them via recent_hits; the_palette_records_and_replays_recent_commands_on_an_empty_query covers record -> empty query -> replay"
 
 [[item]]
 id = "UI-217-8"

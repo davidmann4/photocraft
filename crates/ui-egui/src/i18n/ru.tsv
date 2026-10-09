@@ -2093,6 +2093,9 @@
 	Stroke	Мазок
 	Stroke Catch-up	Догонять мазком
 	Stroke:	Обводка:
+	Location:	Расположение:
+	Inside	Внутри
+	Outside	Снаружи
 	Tetrahedral	Тетраэдрическая
 	Texture Each Tip	Текстура на каждый отпечаток
 	The current gradient (pick one in Window › Gradients)	Текущий градиент (выберите в Окно › Градиенты)
