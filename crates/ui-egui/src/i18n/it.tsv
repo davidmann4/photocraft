@@ -2093,7 +2093,7 @@
 	Pixel	Pixel
 	Adjustment	Regolazione
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Trascina (lazo) o clic su punti (poligonale) · {add} aggiungi · {sub} sottrai
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels	Trascina un riquadro ritaglio · trascina dentro per spostare · bordi ridimensionano ({ratio} proporzione, {centre} centro) · Spazio sposta durante disegno · {commit} conferma · Esc annulla
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Trascina un riquadro ritaglio · trascina dentro per spostare · bordi ridimensionano ({ratio} proporzione, {centre} centro) · Spazio sposta durante disegno · frecce spostano · X scambia orientamento · {commit} conferma · Esc annulla
 	{mode} Color · {bits} bit	Colore {mode} · {bits} bit
 	Scrubby Zoom	Zoom scrubby
 	Auto Erase	Cancellazione automatica

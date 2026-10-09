@@ -2357,7 +2357,7 @@
 	Pixel	Pixel
 	Adjustment	Ajustement
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Faites glisser (lasso) ou cliquez des points (polygonal) · {add} ajouter · {sub} soustraire
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels	Tracez un cadre de recadrage · faites glisser à l'intérieur pour le déplacer · les bords le redimensionnent ({ratio} proportions, {centre} centre) · Espace le déplace pendant le tracé · {commit} valide · Échap annule
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Tracez un cadre de recadrage · faites glisser à l'intérieur pour le déplacer · les bords le redimensionnent ({ratio} proportions, {centre} centre) · Espace le déplace pendant le tracé · flèches le décalent · X permute l'orientation · {commit} valide · Échap annule
 	{mode} Color · {bits} bit	Couleurs {mode} · {bits} bits
 	Drag to move the layer	Faites glisser pour déplacer le calque
 	Scrubby Zoom	Zoom par glissement

@@ -956,7 +956,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     Tool::Crop => hint(
                         ui,
                         &crate::i18n::fmt(
-                            tl!("Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels"),
+                            tl!("Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels"),
                             &[
                                 ("ratio", &crate::shortcuts::pretty("Shift")),
                                 ("centre", &crate::shortcuts::pretty("Alt")),

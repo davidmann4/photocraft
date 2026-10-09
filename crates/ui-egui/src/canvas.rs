@@ -3048,6 +3048,9 @@ fn draw_tool_state(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform,
         // The frame's angle beside the pointer while it turns (#1792).
         if let (Some(a), Some(h)) = (crate::crop_ui::turning(app), hover) {
             draw_readout(painter.ctx(), "crop-angle-readout", h, ["Angle:"], [format!("{a:.1}°")]);
+        } else if let (Some([w, h]), Some(at)) = (crate::crop_ui::sizing(app), hover) {
+            // Its W × H while it is drawn or resized (#1919), like the marquee's.
+            draw_marquee_readout(painter.ctx(), at, marquee_readout([0.0, 0.0, w, h]));
         }
     }
 }

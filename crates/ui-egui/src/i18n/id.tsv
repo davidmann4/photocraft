@@ -2348,7 +2348,7 @@
 	Pixel	Piksel
 	Adjustment	Penyesuaian
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Seret (lasso) atau klik titik (polygonal) · {add} tambah · {sub} kurangi
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels	Seret kotak crop · seret di dalam untuk memindah · tepi mengubah ukuran (rasio {ratio}, tengah {centre}) · Space memindah saat menggambar · {commit} menerapkan · Esc batal
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Seret kotak crop · seret di dalam untuk memindah · tepi mengubah ukuran (rasio {ratio}, tengah {centre}) · Space memindah saat menggambar · panah menggeser · X menukar orientasi · {commit} menerapkan · Esc batal
 	{mode} Color · {bits} bit	Warna {mode} · {bits} bit
 	Drag to move the layer	Seret untuk memindah layer
 	Scrubby Zoom	Zoom Scrubby

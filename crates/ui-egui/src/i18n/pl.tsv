@@ -2386,7 +2386,7 @@
 	Pixel	Piksel
 	Adjustment	Korekta
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Przeciągaj (lasso) lub klikaj punkty (wielokątne) · {add} dodaj · {sub} odejmij
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels	Przeciągnij ramkę przycinania · przeciągnij wewnątrz, aby przesunąć · krawędzie zmieniają rozmiar ({ratio} proporcje, {centre} od środka) · Spacja przesuwa podczas rysowania · {commit} zatwierdza · Esc anuluje
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Przeciągnij ramkę przycinania · przeciągnij wewnątrz, aby przesunąć · krawędzie zmieniają rozmiar ({ratio} proporcje, {centre} od środka) · Spacja przesuwa podczas rysowania · strzałki przesuwają · X zamienia orientację · {commit} zatwierdza · Esc anuluje
 	{mode} Color · {bits} bit	Kolor {mode} · {bits} bitów
 	Drag to move the layer	Przeciągnij, aby przesunąć warstwę
 	Scrubby Zoom	Powiększanie przeciąganiem

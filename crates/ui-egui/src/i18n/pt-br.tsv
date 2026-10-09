@@ -2356,7 +2356,7 @@
 	Pixel	Pixel
 	Adjustment	Ajuste
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Arraste (laço) ou clique nos pontos (poligonal) · {add} adicionar · {sub} subtrair
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels	Arraste uma caixa de corte · arraste dentro para mover · as bordas redimensionam ({ratio} proporção, {centre} centro) · Espaço move durante o desenho · {commit} confirma · Esc cancela
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Arraste uma caixa de corte · arraste dentro para mover · as bordas redimensionam ({ratio} proporção, {centre} centro) · Espaço move durante o desenho · setas deslocam · X troca a orientação · {commit} confirma · Esc cancela
 	{mode} Color · {bits} bit	Cor {mode} · {bits} bits
 	Drag to move the layer	Arraste para mover a camada
 	Scrubby Zoom	Zoom por arraste

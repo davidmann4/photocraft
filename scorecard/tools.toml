@@ -242,3 +242,10 @@ target = "Crop: drag outside the frame to rotate it (Shift 15 deg steps, angle r
 status = "done"
 issue = 1792
 note = "image.crop angle param (image_cmds.rs: Image Rotation > Arbitrary + crop, one undo step); crop_ui.rs turns, moves and resizes the frame along its axes (Classic Mode visuals); UiState.crop_angle"
+
+[[item]]
+id = "TOOL-214-19"
+target = "Crop: arrow keys nudge the crop box (Shift 10 px), X swaps portrait/landscape, W x H readout while drawing or resizing"
+status = "done"
+issue = 1919
+note = "crop_ui.rs keys/nudge/swap_orientation (ahead of the selection nudge and tools.swapColors in shortcuts.rs; X also swaps the options-bar ratio) and sizing (canvas.rs draws it with the marquee readout); turned frames included"

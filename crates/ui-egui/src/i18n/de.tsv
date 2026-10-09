@@ -2076,7 +2076,7 @@
 	Pixel	Pixel
 	Adjustment	Anpassung
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Ziehen (Lasso) oder Punkte klicken (polygonal) · {add} hinzufügen · {sub} abziehen
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels	Freistellrahmen ziehen · innen ziehen verschiebt · Kanten skalieren ({ratio} Verhältnis, {centre} zentriert) · Leertaste verschiebt beim Zeichnen · {commit} übernimmt · Esc bricht ab
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Freistellrahmen ziehen · innen ziehen verschiebt · Kanten skalieren ({ratio} Verhältnis, {centre} zentriert) · Leertaste verschiebt beim Zeichnen · Pfeiltasten verschieben · X tauscht Ausrichtung · {commit} übernimmt · Esc bricht ab
 	{mode} Color · {bits} bit	{mode}-Farbe · {bits} Bit
 	Scrubby Zoom	Schleppzoom
 	Auto Erase	Automatisch löschen
