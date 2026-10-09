@@ -1825,17 +1825,20 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 ui.close();
             }
         });
-        if icons::button(
-            ui,
-            "layer-mask",
-            26.0,
-            false,
-            &crate::i18n::fmt(tl!("Add a mask  (from the selection; {key} inverts)"), &[("key", &crate::shortcuts::pretty("Alt"))]),
-        )
-        .clicked()
+        // Like Photoshop the button never replaces a mask (#2075): with a layer mask it adds a
+        // vector mask, and with both it is greyed.
+        let alt = ui.input(|i| i.modifiers.alt);
+        let mask_cmd = crate::layer_menu_ui::mask_button_command(active_layer, doc.selection.is_some(), alt);
+        let mask_tip = if active_layer.is_some_and(|l| l.mask.is_some()) {
+            tl!("Add vector mask").to_string()
+        } else {
+            crate::i18n::fmt(tl!("Add a mask  (from the selection; {key} inverts)"), &[("key", &crate::shortcuts::pretty("Alt"))])
+        };
+        let mask_btn = ui.add_enabled_ui(mask_cmd.is_some(), |ui| icons::button(ui, "layer-mask", 26.0, false, &mask_tip)).inner;
+        if mask_btn.clicked()
+            && let Some(cmd) = mask_cmd
         {
-            let alt = ui.input(|i| i.modifiers.alt);
-            actions.push((crate::layer_menu_ui::add_mask_command(doc.selection.is_some(), alt).into(), json!({})));
+            actions.push((cmd.into(), json!({})));
         }
         let fx = fx_button(ui, 26.0, tl!("Add a layer style"));
         egui::Popup::menu(&fx).open_memory(footer_menu_right_click(&fx)).show(|ui| {
