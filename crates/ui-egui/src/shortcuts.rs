@@ -357,6 +357,7 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
             app.ui.polygon.clear();
             app.ui.polygon_mode.clear();
             app.ui.crop_rect = None;
+            app.ui.crop_angle = 0.0;
             app.crop.drag = None;
             return;
         }

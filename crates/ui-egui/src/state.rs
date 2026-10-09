@@ -902,6 +902,10 @@ pub struct UiState {
     /// Crop tool rectangle being edited [x0, y0, x1, y1] (document coordinates).
     #[serde(default)]
     pub crop_rect: Option<[f64; 4]>,
+    /// The crop frame's turn in degrees, clockwise on screen about its centre (`crop_rect` is the
+    /// frame before the turn); 0 when upright. Committing passes it as `image.crop`'s `angle`.
+    #[serde(default)]
+    pub crop_angle: f64,
     pub next_id: u64,
     /// Last status message (errors from commands, hints).
     pub status: String,
@@ -979,6 +983,7 @@ impl Default for UiState {
             polygon_mode: String::new(),
             magnetic: Default::default(),
             crop_rect: None,
+            crop_angle: 0.0,
             next_id: 1,
             status: String::new(),
             status_error: false,
