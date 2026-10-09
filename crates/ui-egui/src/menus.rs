@@ -7,9 +7,10 @@ use crate::state::DialogKind;
 
 /// Shared gate for native menu clicks and control-channel `ui.menu.invoke`.
 /// Dialogs and unsaved-changes prompts block edits, but allow the four view-navigation
-/// commands also usable through shortcuts. Camera Raw blocks menu commands entirely.
+/// commands also usable through shortcuts. Camera Raw blocks menu commands entirely, and a pending
+/// crop blocks the commands Photoshop greys during one (`crop_ui::blocks`).
 pub(crate) fn modal_allows(app: &PhotocraftApp, id: &str) -> bool {
-    if app.camera_raw.is_some() {
+    if app.camera_raw.is_some() || crate::crop_ui::blocks(app, id) {
         return false;
     }
     (app.ui.dialogs.is_empty() && app.discard.is_none()) || crate::shortcuts::NAV_COMMANDS.contains(&id)
@@ -486,6 +487,10 @@ fn open_path(app: &mut PhotocraftApp, path: &str) -> Result<Value, String> {
 pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
     // Photoshop greys these for the Background layer, other layer kinds or single-layer documents.
     if crate::enable_rules::disabled(app, id) {
+        return false;
+    }
+    // A pending crop greys File › New, Open and the Image menu, as in Photoshop (#1918).
+    if crate::crop_ui::blocks(app, id) {
         return false;
     }
     if let Some(e) = crate::workspace_ui::is_enabled(app, id) {
