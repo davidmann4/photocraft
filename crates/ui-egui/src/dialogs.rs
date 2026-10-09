@@ -143,7 +143,9 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             }
             let label = egui::Label::new(egui::RichText::new(&title).font(crate::theme::semibold(15.0))).selectable(false);
             let t = if crate::color_picker_ui::owns(&fields) { ui.add_sized(egui::vec2(ui.available_width(), 22.0), label).rect } else { ui.add(label).rect };
-            let bar = egui::Rect::from_min_max(t.min, egui::pos2(ui.max_rect().right(), t.bottom()));
+            // The whole title band drags (#1921): the full width plus a little of the popup's
+            // padding around it and the gap above the hairline, but none of the controls below.
+            let bar = egui::Rect::from_min_max(t.min - egui::vec2(7.0, 7.0), egui::pos2(ui.max_rect().right() + 7.0, t.bottom() + 4.0));
             drag = ui.interact(bar, id.with("title"), egui::Sense::drag()).drag_delta();
             ui.add_space(4.0);
             crate::widgets::hairline(ui);
@@ -407,7 +409,7 @@ pub fn confirm(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
                 app.ui.view.guide_layout = params;
             }
             if result.is_ok() {
-                crate::filter_dialog::remember(app, &d.fields);
+                crate::filter_dialog::remember(app, &cmd, &d.fields);
             }
             result
         }
@@ -529,6 +531,39 @@ mod tests {
     }
 
     #[test]
+    fn layer_style_title_gutters_can_start_drags() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        for point in 0..5 {
+            let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(|ui, app| show(app, ui.ctx()), app);
+            PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+            h.state_mut().ui.open_dialog(DialogKind::LayerStyle, serde_json::Map::new());
+            h.run_steps(3);
+            let before = h.get_by_label("Layer Style").rect();
+            let from = match point {
+                0 => egui::pos2(before.left() - 5.0, before.bottom() - 4.0),
+                1 => egui::pos2(before.right() + 5.0, before.bottom() - 4.0),
+                2 => egui::pos2(before.center().x, before.bottom() + 3.0),
+                3 => egui::pos2(before.center().x, before.top() - 5.0),
+                _ => egui::pos2(before.center().x, before.bottom() - 3.0),
+            };
+            h.hover_at(from);
+            h.drag_at(from);
+            h.run_steps(2);
+            for i in 1..=8 {
+                h.hover_at(from + egui::vec2(64.0, -32.0) * (i as f32 / 8.0));
+                h.run_steps(1);
+            }
+            h.drop_at(from + egui::vec2(64.0, -32.0));
+            h.run_steps(3);
+            let delta = h.get_by_label("Layer Style").rect().min - before.min;
+            assert!((delta - egui::vec2(64.0, -32.0)).length() < 2.0, "point {point}: moved {delta:?}");
+            assert_eq!(h.state().ui.dialogs.len(), 1);
+        }
+    }
+
+    #[test]
     fn dragging_the_title_bar_moves_the_dialog() {
         use egui_kittest::{Harness, kittest::Queryable};
 
@@ -644,38 +679,5 @@ mod tests {
         crate::filter_dialog::open(h.state_mut(), BLUR).unwrap();
         h.run_steps(2);
         assert_eq!(radius(&h), Some(5.0), "a cancelled 9 is not remembered");
-    }
-
-    /// Select › Modify and the remembered values survive a restart (prefs), validated on the way
-    /// back in: a hand-edited or stale entry can't open the dialog out of range or crash it.
-    #[test]
-    fn remembered_dialog_values_are_validated() {
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        app.run("file.new", json!({"width": 32, "height": 32})).unwrap();
-        app.run("select.all", json!({})).unwrap();
-        let id = open_command_dialog(&mut app, "select.modify.expand", "Expand");
-        app.ui.dialog_mut(id).unwrap().fields.insert("radius".into(), json!(7.0));
-        confirm(&mut app, id).unwrap();
-        assert_eq!(app.session.prefs().dialogs.get("select.modify.expand"), Some(&json!({"radius": 7.0, "applyAtCanvasBounds": false})));
-        let id = open_command_dialog(&mut app, "select.modify.expand", "Expand");
-        assert_eq!(app.ui.dialog_mut(id).unwrap().fields["radius"], json!(7.0));
-        app.ui.close_dialog(id);
-
-        app.session.prefs.edit(|p| p.dialogs.insert("filter.blur.gaussianBlur".into(), json!({"radius": 1e12, "nope": 3})));
-        app.session.prefs.edit(|p| p.dialogs.insert("filter.blur.motionBlur".into(), json!({"angle": "x", "distance": f64::MAX})));
-        app.session.prefs.edit(|p| p.dialogs.insert("filter.distort.twirl".into(), json!("not an object")));
-        let id = open_command_dialog(&mut app, "filter.blur.gaussianBlur", "Gaussian Blur");
-        let f = app.ui.dialog_mut(id).unwrap().fields.clone();
-        assert_eq!(f["radius"], json!(1000.0), "clamped to the range");
-        assert!(!f.contains_key("nope"));
-        app.ui.close_dialog(id);
-        for cmd in ["filter.blur.motionBlur", "filter.distort.twirl"] {
-            let id = open_command_dialog(&mut app, cmd, cmd);
-            assert!(app.ui.dialog_mut(id).is_some(), "{cmd} opens");
-            app.ui.close_dialog(id);
-        }
-        // Dialogs showing the document's own state don't reopen from a remembered value.
-        assert!(!crate::filter_dialog::remembers("layer.layerStyle.globalLight"));
-        assert!(crate::filter_dialog::remembers("select.modify.feather"));
     }
 }

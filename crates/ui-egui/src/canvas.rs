@@ -2399,6 +2399,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     // drawn; otherwise Space is the Hand and ⌘Space / ⌘⌥Space the Zoom tool while held.
     let reposition = crate::hold_keys::reposition_held(app, &ctx);
     crate::crop_ui::set_space(app, reposition);
+    // A tab switched this frame drops the other document's pending crop (#1918).
+    crate::crop_ui::cancel_stale(app);
     crate::crop_ui::ensure_frame(app);
     let mut drawing = crate::crop_ui::active(app);
     if let Some(d) = app.drag.as_mut().filter(|d| crate::hold_keys::repositions(d.tool)) {
@@ -2626,6 +2628,12 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             crate::magnetic_lasso_ui::flush(app);
         }
         if buttons.stopped {
+            // The live painting press already created the stroke and this release commits it.
+            // egui may also report clicked on the same release; replaying that click paints a
+            // second full-pressure dab over the real (possibly light-pressure) pen dab.
+            if press_stroke {
+                buttons.clicked = false;
+            }
             let p = response.interact_pointer_pos().map(|p| xf.to_doc(p)).or_else(|| app.drag.as_ref().and_then(|d| d.points.last().map(|q| [q[0], q[1]])));
             if let Some(d) = p {
                 tool_event(app, ToolEvent::Up { x: d[0], y: d[1] }, mods);
@@ -2669,7 +2677,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
                     if tool == Tool::Move && app.ui.transform.is_none() {
                         begin_transform_controls_at(app, &ctx, &xf, p);
                     }
-                    tool_event(app, ToolEvent::Down { x: d[0], y: d[1], pressure: 1.0 }, click_mods);
+                    // If this tool was not handled on pointer-down, fall back to a
+                    // click-sized gesture while preserving pen pressure (mouse stays at 1).
+                    tool_event(app, ToolEvent::Down { x: d[0], y: d[1], pressure: app.stylus.pressure() }, click_mods);
                     tool_event(app, ToolEvent::Up { x: d[0], y: d[1] }, click_mods);
                 }
             }
@@ -2701,7 +2711,12 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         if app.ui.view.shows(app.ui.view.show.canvas_guides) {
             crate::rulers::draw_guides(app, &painter, &xf, &doc);
         }
+        // The pending crop frame shows on its own document only, not on the other tiles (#1918).
+        let foreign_crop = if app.session.active_index() == Some(idx) { None } else { app.ui.crop_rect.take() };
         draw_drag_preview(app, &painter, &xf);
+        if foreign_crop.is_some() {
+            app.ui.crop_rect = foreign_crop;
+        }
         crate::zoom_tool::draw(&ctx, &painter);
         let resizing = crate::brush_resize::draw(app, &painter, &xf);
         draw_transform_controls(app, &painter, &xf);
@@ -3210,6 +3225,9 @@ fn draw_tool_state(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform,
         // The frame's angle beside the pointer while it turns (#1792).
         if let (Some(a), Some(h)) = (crate::crop_ui::turning(app), hover) {
             draw_readout(painter.ctx(), "crop-angle-readout", h, ["Angle:"], [format!("{a:.1}°")]);
+        } else if let (Some([w, h]), Some(at)) = (crate::crop_ui::sizing(app), hover) {
+            // Its W × H while it is drawn or resized (#1919), like the marquee's.
+            draw_marquee_readout(painter.ctx(), at, marquee_readout([0.0, 0.0, w, h]));
         }
     }
 }
@@ -4011,6 +4029,8 @@ pub fn commit_polygon(app: &mut PhotocraftApp) {
 
 /// Apply the crop tool's rectangle.
 pub fn commit_crop(app: &mut PhotocraftApp) {
+    // Never another document's frame (#1918).
+    crate::crop_ui::cancel_stale(app);
     let Some(r) = app.ui.crop_rect.take() else { return };
     // The untouched default frame around the whole canvas crops nothing (Photoshop's ↵ on it does
     // nothing); one framing the selection's bounds crops to them (#1789).
@@ -4052,6 +4072,19 @@ pub fn paint_target(app: &PhotocraftApp) -> serde_json::Value {
     // Viewing the mask (⌥-click its thumbnail, #196) paints the mask.
     let viewing = photocraft_engine::mask_view_cmds::current(st).is_some();
     json!(if (app.ui.mask_target || viewing) && has_mask { "mask" } else { "pixels" })
+}
+
+#[cfg(test)]
+mod tap_pressure_tests {
+    #[test]
+    fn fallback_click_pressure_matches_pen_or_mouse() {
+        let mut s = crate::stylus::Stylus::default();
+        assert_eq!(s.pressure(), 1.0, "mouse clicks paint at full pressure");
+        s.feed.set(Some(crate::stylus::PenSample { pressure: 0.18, ..Default::default() }));
+        assert_eq!(s.pressure(), 0.18, "a tap without a canvas drag still has pen pressure");
+        s.use_pressure = false;
+        assert_eq!(s.pressure(), 1.0, "Use Tablet Pressure off stays full pressure");
+    }
 }
 
 #[cfg(test)]

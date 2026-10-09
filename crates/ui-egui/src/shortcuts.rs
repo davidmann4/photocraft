@@ -295,6 +295,11 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
             return;
         }
     }
+    // Crop tool with a pending frame: arrows nudge it (⇧ ×10) and X swaps its orientation, before
+    // the selection / layer nudge and the X colour swap (#1919).
+    if focus == Focus::None && crate::crop_ui::keys(app, ctx) {
+        return;
+    }
     // Move tool / Free Transform: arrows nudge (⇧ ×10, ⌥ duplicates first).
     if focus == Focus::None && crate::move_mods::arrow_keys(app, ctx) {
         return;
@@ -393,9 +398,7 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if pressed(Key::Escape) {
             app.ui.polygon.clear();
             app.ui.polygon_mode.clear();
-            app.ui.crop_rect = None;
-            app.ui.crop_angle = 0.0;
-            app.crop.drag = None;
+            crate::crop_ui::cancel(app);
             return;
         }
     }

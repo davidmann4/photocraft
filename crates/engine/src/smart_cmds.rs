@@ -597,6 +597,9 @@ pub fn layer_to_smart(doc: &Document, l: &Layer) -> Result<Layer> {
     sub.resolution_dpi = doc.resolution_dpi;
     sub.icc_profile = doc.icc_profile.clone();
     sub.global_light = doc.global_light;
+    // Pattern fills and pattern layer effects reference document-level patterns by ID.
+    // Preserve those resources in the embedded document before rendering or saving it.
+    sub.patterns = doc.patterns.clone();
     if any_layer(l, &|x| matches!(x.content, LayerContent::Smart(_))) {
         // Nested PSD placed layers find their embedded files here.
         sub.metadata.psd_global_blocks = doc.metadata.psd_global_blocks.clone();

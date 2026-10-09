@@ -2070,7 +2070,7 @@
 	Pixel	Pixel
 	Adjustment	Aanpassing
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Slepen (lasso) of punten klikken (veelhoek) · {add} toevoegen · {sub} aftrekken
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels	Sleep een bijsnijkader · sleep binnenin om te verplaatsen · randen wijzigen formaat ({ratio} verhouding, {centre} midden) · Spatie verplaatst tijdens tekenen · {commit} past toe · Esc annuleert
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Sleep een bijsnijkader · sleep binnenin om te verplaatsen · randen wijzigen formaat ({ratio} verhouding, {centre} midden) · Spatie verplaatst tijdens tekenen · pijltjes verschuiven · X wisselt oriëntatie · {commit} past toe · Esc annuleert
 	{mode} Color · {bits} bit	{mode}-kleur · {bits} bit
 	Scrubby Zoom	Sleepzoom
 	Auto Erase	Automatisch gummen

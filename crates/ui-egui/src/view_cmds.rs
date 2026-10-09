@@ -576,10 +576,12 @@ fn run(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, p: &Value) -> Res
         }
         "view.twoHundredPercent" | "view.printSize" => {
             let i = app.session.active_index().ok_or("no document")?;
-            // Print Size assumes Photoshop's default 72 ppi screen resolution.
+            // Print Size shows the document at its print size for the screen resolution
+            // (Preferences ▸ Units & Rulers: Screen Resolution, 72 ppi by default).
             let dpi = app.session.active().map_or(72.0, |d| d.doc.resolution_dpi.max(1.0));
             let size = app.session.active().map_or([0, 0], |d| [d.doc.size.width, d.doc.size.height]);
-            let z = if id == "view.twoHundredPercent" { 2.0 } else { 72.0 / dpi };
+            let screen = app.session.prefs().units_and_rulers.screen_resolution.max(1.0) as f32;
+            let z = if id == "view.twoHundredPercent" { 2.0 } else { screen / dpi };
             app.ui.views[i].zoom = crate::zoom_levels::clamp(z, size);
             Ok(json!({"zoom": app.ui.views[i].zoom}))
         }

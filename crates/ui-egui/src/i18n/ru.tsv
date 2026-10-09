@@ -1531,7 +1531,7 @@
 	Click to fill similar colours	Щёлкните, чтобы залить похожие цвета
 	Click to add text	Щёлкните, чтобы добавить текст
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Перетащите (лассо) или щёлкайте точки (многоугольное) · {add} добавить · {sub} вычесть
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels	Выделите рамку кадрирования · перетащите внутри для перемещения · края меняют размер ({ratio} пропорции, {centre} центр) · Space двигает при рисовании · {commit} применить · Esc отмена
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Выделите рамку кадрирования · перетащите внутри для перемещения · края меняют размер ({ratio} пропорции, {centre} центр) · Space двигает при рисовании · стрелки сдвигают · X меняет ориентацию · {commit} применить · Esc отмена
 	{mode} Color · {bits} bit	{mode}, {bits} бит
 	Drag to move the layer	Перетащите, чтобы переместить слой
 	Fit Screen	По размеру экрана

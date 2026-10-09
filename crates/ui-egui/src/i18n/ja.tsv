@@ -3100,7 +3100,7 @@ fontWeight	Italic	斜体
 	Document Size	ドキュメントサイズ
 	Dodge/Burn	覆い焼き/焼き込み
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	ドラッグ (投げ縄) またはクリックでポイント指定 (多角形) · {add} 追加 · {sub} 除外
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels	切り抜きボックスをドラッグ · 内側をドラッグで移動 · 縁でサイズ変更 ({ratio} で比率、{centre} で中心) · 描画中は Space で移動 · {commit} で確定 · Esc で取り消し
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	切り抜きボックスをドラッグ · 内側をドラッグで移動 · 縁でサイズ変更 ({ratio} で比率、{centre} で中心) · 描画中は Space で移動 · 矢印キーで微調整 · X で縦横を切り替え · {commit} で確定 · Esc で取り消し
 	Drag to move the layer	ドラッグしてレイヤーを移動
 	Duplicated selection name	複製した選択範囲の名前
 	Dynamics	ダイナミクス
