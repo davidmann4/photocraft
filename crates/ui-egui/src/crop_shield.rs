@@ -2,8 +2,8 @@
 //! options", #1919): whether the area outside the crop box shows at all (Show Cropped Area, H),
 //! and the shield dimming it (Enable Crop Shield: Match Canvas or a custom colour, an opacity, and
 //! Auto Adjust Opacity, which lightens it while the box is dragged). Photoshop's defaults: all on,
-//! Match Canvas, 75 %. PhotoCraft always works like Photoshop's Classic Mode, so the menu has no
-//! Use Classic Mode or Auto Center Preview.
+//! Match Canvas, 75 %. The menu also holds the crop mode: Use Classic Mode (P; off by default) and
+//! Auto Center Preview (on by default, default mode only), see `crop_mode`.
 //!
 //! The state lives in `ToolOptions::crop_shield` ([`CropShield`]), which `ui.inspect` reports and
 //! `ui.set {cropShield: {...}}` patches. [`fill`] resolves it to the colour the canvas paints over
@@ -35,6 +35,12 @@ pub enum ShieldColor {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CropShield {
+    /// Use Classic Mode (P): the box turns and moves over the image instead of the image turning
+    /// and moving behind an upright box (`crop_mode`). Off by default, as in Photoshop.
+    pub classic_mode: bool,
+    /// Auto Center Preview: in default mode, drawing or resizing the box re-pans the view so the
+    /// box sits in the middle of the canvas.
+    pub auto_center_preview: bool,
     /// Show Cropped Area (H): off hides everything outside the box behind the canvas colour.
     pub show_cropped_area: bool,
     /// Enable Crop Shield: off shows the area outside the box undimmed.
@@ -50,7 +56,16 @@ pub struct CropShield {
 
 impl Default for CropShield {
     fn default() -> Self {
-        Self { show_cropped_area: true, enabled: true, color: ShieldColor::MatchCanvas, custom_color: [0, 0, 0], opacity: DEFAULT_OPACITY, auto_adjust: true }
+        Self {
+            classic_mode: false,
+            auto_center_preview: true,
+            show_cropped_area: true,
+            enabled: true,
+            color: ShieldColor::MatchCanvas,
+            custom_color: [0, 0, 0],
+            opacity: DEFAULT_OPACITY,
+            auto_adjust: true,
+        }
     }
 }
 
@@ -98,8 +113,9 @@ pub fn hides_outside(app: &PhotocraftApp) -> bool {
     app.ui.tool == Tool::Crop && app.ui.crop_rect.is_some() && !app.ui.tool_options.crop_shield.show_cropped_area
 }
 
-/// H with the Crop tool showing a box and no drag in progress toggles Show Cropped Area. Returns
-/// true when the key was used; otherwise H stays the Hand tool key.
+/// H with the Crop tool showing a box and no drag in progress toggles Show Cropped Area, and P Use
+/// Classic Mode. Returns true when a key was used; otherwise H stays the Hand tool key and P the
+/// Pen's.
 pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     if app.ui.tool != Tool::Crop || app.ui.crop_rect.is_none() || app.crop.drag.is_some() {
         return false;
@@ -107,6 +123,13 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::H)) {
         let s = &mut app.ui.tool_options.crop_shield;
         s.show_cropped_area = !s.show_cropped_area;
+        return true;
+    }
+    if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::P)) {
+        let s = &mut app.ui.tool_options.crop_shield;
+        s.classic_mode = !s.classic_mode;
+        // The view follows at once (default mode turns it, Classic Mode puts it back).
+        crate::crop_mode::sync(app, None);
         return true;
     }
     false
@@ -120,6 +143,14 @@ pub fn options_button(s: &mut CropShield, ui: &mut egui::Ui) -> bool {
     egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(240.0);
         ui.set_max_width(300.0);
+        ui.horizontal(|ui| {
+            crate::widgets::checkbox(ui, &mut s.classic_mode, tl!("Use Classic Mode"));
+            ui.weak(crate::shortcuts::pretty("P"));
+        });
+        ui.separator();
+        ui.add_enabled_ui(!s.classic_mode, |ui| {
+            crate::widgets::checkbox(ui, &mut s.auto_center_preview, tl!("Auto Center Preview"));
+        });
         ui.horizontal(|ui| {
             crate::widgets::checkbox(ui, &mut s.show_cropped_area, tl!("Show Cropped Area"));
             ui.weak(crate::shortcuts::pretty("H"));

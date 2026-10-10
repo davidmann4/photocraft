@@ -167,6 +167,7 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2]) {
         let exclude = app.session.active().map(|s| s.selected_layers()).unwrap_or_default();
         moving_rect(app).map(|rect| (Gesture::Move { rect }, exclude))
     } else if tool == Tool::Crop
+        && crate::crop_mode::classic(app)
         && let Some(rect) = app.ui.crop_rect.filter(|r| crate::crop_ui::angle(app) == 0.0 && crate::crop_ui::hit(*r, p, tol) == crate::crop_ui::Hit::Inside)
     {
         // Moving the crop frame snaps its edges, like the Move tool's layer bounds.
@@ -175,8 +176,8 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2]) {
         && (crate::crop_ui::turns_at(app, p)
             || app.ui.crop_rect.is_some_and(|r| crate::crop_ui::hit_turned(r, crate::crop_ui::angle(app), p, tol) == crate::crop_ui::Hit::Inside))
     {
-        // Turning the frame, or moving a turned one (its edges don't line up with anything): no
-        // snapping.
+        // Turning the frame, moving a turned one (its edges don't line up with anything), or in
+        // the default mode moving or turning the image under the box: no snapping.
         None
     } else if is_point_tool(tool) {
         Some((Gesture::Point, Vec::new()))
