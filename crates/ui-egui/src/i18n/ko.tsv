@@ -73,6 +73,8 @@
 	Import	가져오기
 	Browse…	찾아보기…
 	Reveal in Finder	Finder에서 보기
+	Show in Explorer	파일 탐색기에서 보기
+	Show in Folder	폴더에서 보기
 	File Info…	파일 정보…
 	Print…	인쇄…
 	Print One Copy	한 부 인쇄
@@ -2986,3 +2988,5 @@ fontWeight	Italic	기울임
 	No subject found — try a rectangle around the object	피사체를 찾을 수 없습니다 — 개체 주위에 사각형을 그려 보세요
 	Use Classic Mode	클래식 모드 사용
 	Auto Center Preview	미리 보기 자동 가운데 맞춤
+	W x H x Resolution	폭 x 높이 x 해상도
+	Front Image	전면 이미지

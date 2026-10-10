@@ -84,6 +84,8 @@
 	Import	Importuj
 	Browse…	Przeglądaj…
 	Reveal in Finder	Pokaż w Finderze
+	Show in Explorer	Pokaż w Eksploratorze
+	Show in Folder	Pokaż w folderze
 	File Info…	Informacje o pliku…
 	Print…	Drukuj…
 	Print One Copy	Drukuj jedną kopię
@@ -3428,3 +3430,5 @@ cameraRaw	Roughness	Chropowatość
 	No subject found — try a rectangle around the object	Nie znaleziono obiektu — spróbuj prostokąta wokół obiektu
 	Use Classic Mode	Użyj trybu klasycznego
 	Auto Center Preview	Automatycznie wyśrodkuj podgląd
+	W x H x Resolution	Szer. x Wys. x Rozdzielczość
+	Front Image	Obraz na wierzchu

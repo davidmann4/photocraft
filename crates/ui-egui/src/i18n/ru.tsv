@@ -1613,6 +1613,8 @@
 	Open a document to select a colour range.	Откройте документ, чтобы выбрать цветовой диапазон.
 	Saved	Сохранено
 	Reveal in Finder	Показать в Finder
+	Show in Explorer	Показать в Проводнике
+	Show in Folder	Показать в папке
 	Before (Y)	До (Y)
 	After (X)	После (X)
 	Original	Оригинал
@@ -2692,3 +2694,6 @@ fontWeight	Italic	Курсив
 	Layer deleted, but confirmation preference could not be saved: {error}	Слой удалён, но не удалось сохранить настройку подтверждения: {error}
 	Use Classic Mode	Использовать классический режим
 	Auto Center Preview	Автоматически центрировать просмотр
+	W x H x Resolution	Ш x В x Разрешение
+	Front Image	Изображение переднего плана
+	Swaps height and width	Меняет местами высоту и ширину

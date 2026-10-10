@@ -80,6 +80,8 @@
 	Import	Impor
 	Browse…	Telusuri…
 	Reveal in Finder	Tampilkan di Finder
+	Show in Explorer	Tampilkan di Explorer
+	Show in Folder	Tampilkan di Folder
 	File Info…	Info Berkas…
 	Print…	Cetak…
 	Print One Copy	Cetak Satu Salinan
@@ -2814,3 +2816,5 @@ fontWeight	Italic	Miring
 	No subject found — try a rectangle around the object	Subjek tidak ditemukan — coba persegi panjang di sekitar objek
 	Use Classic Mode	Gunakan Mode Klasik
 	Auto Center Preview	Pusatkan Pratinjau Otomatis
+	W x H x Resolution	L x T x Resolusi
+	Front Image	Gambar Depan

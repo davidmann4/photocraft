@@ -84,6 +84,8 @@
 	Import	Importar
 	Browse…	Procurar…
 	Reveal in Finder	Mostrar no Finder
+	Show in Explorer	Mostrar no Explorador
+	Show in Folder	Mostrar na pasta
 	File Info…	Informações do arquivo…
 	Print…	Imprimir…
 	Print One Copy	Imprimir uma cópia
@@ -2835,3 +2837,5 @@ fontWeight	Italic	Itálico
 	No subject found — try a rectangle around the object	Nenhum assunto encontrado — tente um retângulo ao redor do objeto
 	Use Classic Mode	Usar modo clássico
 	Auto Center Preview	Centralizar visualização automaticamente
+	W x H x Resolution	L x A x Resolução
+	Front Image	Imagem frontal

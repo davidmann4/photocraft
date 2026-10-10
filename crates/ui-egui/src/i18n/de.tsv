@@ -85,6 +85,8 @@
 	Import	Importieren
 	Browse…	Durchsuchen…
 	Reveal in Finder	Im Finder anzeigen
+	Show in Explorer	Im Explorer anzeigen
+	Show in Folder	Im Ordner anzeigen
 	File Info…	Dateiinformationen…
 	Print…	Drucken…
 	Print One Copy	Eine Kopie drucken
@@ -2447,3 +2449,5 @@ fontWeight	Italic	Kursiv
 	No subject found — try a rectangle around the object	Kein Motiv gefunden — versuchen Sie ein Rechteck um das Objekt
 	Use Classic Mode	Classic-Modus verwenden
 	Auto Center Preview	Automatische zentrierte Vorschau
+	W x H x Resolution	B x H x Auflösung
+	Front Image	Vorderes Bild

@@ -81,6 +81,8 @@
 	Import	导入
 	Browse…	浏览…
 	Reveal in Finder	在 Finder 中显示
+	Show in Explorer	在文件资源管理器中显示
+	Show in Folder	在文件夹中显示
 	File Info…	文件信息…
 	Print…	打印…
 	Print One Copy	打印一份
@@ -2416,3 +2418,5 @@ fontWeight	Italic	斜体
 	No subject found — try a rectangle around the object	未找到主体 — 请尝试在对象周围绘制矩形
 	Use Classic Mode	使用经典模式
 	Auto Center Preview	自动居中预览
+	W x H x Resolution	宽 x 高 x 分辨率
+	Front Image	前面的图像

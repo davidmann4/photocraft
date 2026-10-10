@@ -89,6 +89,8 @@
 	Import	Import
 	Browse…	Procházet…
 	Reveal in Finder	Zobrazit ve Finderu
+	Show in Explorer	Zobrazit v Průzkumníkovi
+	Show in Folder	Zobrazit ve složce
 	File Info…	Informace o souboru…
 	Print…	Tisk…
 	Print One Copy	Vytisknout jednu kopii
@@ -2408,3 +2410,5 @@ fontWeight	Italic	Kurzíva
 	No subject found — try a rectangle around the object	Nebyl nalezen žádný objekt — zkuste obdélník kolem objektu
 	Use Classic Mode	Použít klasický režim
 	Auto Center Preview	Automaticky vystředit náhled
+	W x H x Resolution	Š x V x Rozlišení
+	Front Image	Přední obraz

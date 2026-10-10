@@ -61,13 +61,6 @@ fn mid(q: [Pos2; 4]) -> Pos2 {
     pos2((q[0].x + q[2].x) / 2.0, (q[0].y + q[2].y) / 2.0)
 }
 
-fn shot(h: &mut Harness, name: &str) {
-    if let Some(dir) = std::env::var_os("CROP_SHOTS") {
-        let img = h.render().expect("render");
-        img.save(std::path::Path::new(&dir).join(format!("{name}.png"))).expect("save");
-    }
-}
-
 fn press(h: &mut Harness, p: Pos2, pressed: bool) {
     h.event(egui::Event::PointerMoved(p));
     h.event(egui::Event::PointerButton { pos: p, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
@@ -120,7 +113,6 @@ fn dragging_inside_moves_the_image_and_the_box_stays_centred() {
     assert!(mid(box0).distance(c) < 1.0, "the drawn box is centred: {:?} vs {c:?}", mid(box0));
     let r0 = h.state().ui.crop_rect.expect("frame");
     let red0 = xf(&h).to_screen(130.0, 80.0);
-    shot(&mut h, "inside-before");
     // Inside the box: the image moves with the pointer, the box stays put.
     let (from, to) = (mid(box0) + vec2(-20.0, -10.0), mid(box0) + vec2(40.0, 30.0));
     drag(&mut h, from, to, 8, |h, i| {
@@ -131,11 +123,7 @@ fn dragging_inside_moves_the_image_and_the_box_stays_centred() {
         let want = red0 + (to - from) * t;
         let red = xf(h).to_screen(130.0, 80.0);
         assert!(red.distance(want) < 0.5, "frame {i}: the image under the pointer: {red:?} vs {want:?}");
-        if i == 4 {
-            shot(h, "inside-during");
-        }
     });
-    shot(&mut h, "inside-after");
     let b = screen_box(&h);
     assert!(mid(b).distance(mid(box0)) < 0.5, "after the release: {:?} vs {:?}", mid(b), mid(box0));
     let r = h.state().ui.crop_rect.expect("frame");
@@ -155,7 +143,6 @@ fn a_resize_keeps_the_box_centre_after_a_space_pan() {
     h.run_steps(3);
     let box0 = screen_box(&h);
     assert!(mid(box0).distance(c + vec2(80.0, 40.0)) < 1.0, "panned: {:?}", mid(box0));
-    shot(&mut h, "resize-before");
     // The right edge, dragged 48 out over several frames (8 a frame: past egui's drag threshold).
     let right = pos2(box0[1].x, (box0[1].y + box0[2].y) / 2.0);
     drag(&mut h, right, right + vec2(48.0, 0.0), 6, |h, i| {
@@ -163,17 +150,12 @@ fn a_resize_keeps_the_box_centre_after_a_space_pan() {
         assert!(mid(b).distance(mid(box0)) < 0.5, "frame {i}: the centre stays put: {:?} vs {:?}", mid(b), mid(box0));
         let want = right.x + 48.0 * i as f32 / 6.0;
         assert!((b[1].x - want).abs() < 0.5, "frame {i}: the handle follows the pointer: {} vs {want}", b[1].x);
-        if i == 3 {
-            shot(h, "resize-during");
-        }
     });
-    shot(&mut h, "resize-after");
     // On the image the left edge stayed put: the frame grew 96 to the right.
     let r = h.state().ui.crop_rect.expect("frame");
     assert!((r[0] - 0.0).abs() < 0.5 && (r[2] - 396.0).abs() < 0.5, "{r:?}");
     // On release the box stays at the panned position (Photoshop doesn't snap it back to the
     // middle).
-    shot(&mut h, "resize-released");
     let b = screen_box(&h);
     assert!(mid(b).distance(mid(box0)) < 0.5, "still where it was: {:?} vs {:?}", mid(b), mid(box0));
 }

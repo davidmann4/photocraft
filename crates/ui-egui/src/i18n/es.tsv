@@ -81,6 +81,8 @@
 	Import	Importar
 	Browse…	Examinar…
 	Reveal in Finder	Mostrar en Finder
+	Show in Explorer	Mostrar en el Explorador
+	Show in Folder	Mostrar en la carpeta
 	File Info…	Información del archivo…
 	Print…	Imprimir…
 	Print One Copy	Imprimir un ejemplar
@@ -2476,3 +2478,5 @@ fontWeight	Italic	Cursiva
 	No subject found — try a rectangle around the object	No se encontró ningún sujeto — pruebe un rectángulo alrededor del objeto
 	Use Classic Mode	Usar modo clásico
 	Auto Center Preview	Centrar previsualización automáticamente
+	W x H x Resolution	An. x Al. x Resolución
+	Front Image	Imagen frontal

@@ -85,6 +85,8 @@
 	Import	読み込み
 	Browse…	参照…
 	Reveal in Finder	Finder で表示
+	Show in Explorer	エクスプローラーで表示
+	Show in Folder	フォルダーで表示
 	File Info…	ファイル情報…
 	Print…	プリント…
 	Print One Copy	1 部プリント
@@ -3428,3 +3430,5 @@ fontWeight	Italic	斜体
 	No subject found — try a rectangle around the object	被写体が見つかりません — オブジェクトを囲む長方形を試してください
 	Use Classic Mode	クラシックモードを使用
 	Auto Center Preview	プレビューを自動的に中央に配置
+	W x H x Resolution	幅 x 高さ x 解像度
+	Front Image	前面の画像
