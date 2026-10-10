@@ -243,6 +243,18 @@ pub fn offset_image(app: &mut PhotocraftApp, rect: [f64; 4], press: Option<Press
     }
 }
 
+/// A default-mode press inside the box at `p`: with Auto Center Preview the view first pans the
+/// box to the middle of the canvas (it may sit elsewhere after a pan), then `p` is re-read as the
+/// document point now under the pointer, which the move grabs.
+pub fn center_for_move(app: &mut PhotocraftApp, p: [f64; 2]) -> [f64; 2] {
+    let before = press_view(app);
+    auto_center(app);
+    match (before, press_view(app)) {
+        (Some(before), Some(after)) if before != after => remap(p, before, after, app.ui.view.flip_horizontal),
+        _ => p,
+    }
+}
+
 /// A screen vector `s` (points, at the current zoom ignored) as a document vector of the same
 /// length: undoes the view's flip and rotation.
 pub fn screen_to_doc_vec(app: &PhotocraftApp, s: [f64; 2]) -> [f64; 2] {
@@ -354,9 +366,29 @@ mod tests {
         assert!(crate::crop_ui::turning(&app).is_none());
     }
 
+    /// With Auto Center Preview, a press inside an off-centre box (after a pan, say) centres it
+    /// first; the image then follows the pointer from there.
+    #[test]
+    fn auto_center_centres_the_box_when_a_move_starts() {
+        let mut app = app();
+        with_frame(&mut app);
+        assert!(mid_of(screen_box(&app)).distance(pos2(370.0, 300.0)) < 0.01);
+        screen_drag(&mut app, &[pos2(370.0, 300.0), pos2(380.0, 300.0), pos2(390.0, 300.0)], NONE);
+        assert!(mid_of(screen_box(&app)).distance(pos2(400.0, 300.0)) < 0.01, "{:?}", mid_of(screen_box(&app)));
+        // Grabbed after centring: the image moved 20 with the pointer.
+        let r = app.ui.crop_rect.unwrap();
+        assert!(r.iter().zip([20.0, 30.0, 80.0, 70.0]).all(|(a, b)| (a - b).abs() < 1e-3), "{r:?}");
+    }
+
+    fn mid_of(q: [Pos2; 4]) -> Pos2 {
+        pos2((q[0].x + q[2].x) / 2.0, (q[0].y + q[2].y) / 2.0)
+    }
+
     #[test]
     fn dragging_inside_moves_the_image_under_the_box() {
         let mut app = app();
+        // The box sits off-centre here: without Auto Center Preview it isn't centred first.
+        app.ui.tool_options.crop_shield.auto_center_preview = false;
         with_frame(&mut app);
         let before = screen_box(&app);
         screen_drag(&mut app, &[pos2(370.0, 300.0), pos2(380.0, 305.0), pos2(390.0, 310.0)], NONE);
@@ -640,6 +672,7 @@ mod tests {
     #[test]
     fn ui_pointer_drives_the_default_mode_in_press_coordinates() {
         let mut app = app();
+        app.ui.tool_options.crop_shield.auto_center_preview = false;
         with_frame(&mut app);
         let ctx = egui::Context::default();
         let pointer = |app: &mut PhotocraftApp, pts: [[f64; 2]; 2]| {

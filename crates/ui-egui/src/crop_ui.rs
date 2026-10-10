@@ -578,8 +578,11 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
                     let view = if crate::crop_mode::live_center(app) { crate::crop_mode::press_view(app) } else { None };
                     CropDrag::Resize { hx, hy, start: p, rect, view }
                 }
+                // Default mode: inside the box the image moves; with Auto Center Preview the box is
+                // centred first. (Inside the untouched frame a drag still draws a new box.)
                 Some((rect, Hit::Inside)) if !app.crop.default_frame && image => {
-                    CropDrag::MoveImage { start: p, rect, view: crate::crop_mode::press_view(app) }
+                    let start = crate::crop_mode::center_for_move(app, p);
+                    CropDrag::MoveImage { start, rect, view: crate::crop_mode::press_view(app) }
                 }
                 Some((rect, Hit::Inside)) if !app.crop.default_frame => CropDrag::Move { start: p, rect },
                 Some((rect, Hit::Outside)) if image => {
@@ -603,7 +606,8 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
             let Some(drag) = app.crop.drag.take() else { return true };
             let ok = app.ui.crop_rect.is_some_and(size_ok);
             // A click outside the untouched default frame (no turn) leaves it the default.
-            let changed = !matches!(drag, CropDrag::Rotate { from, .. } | CropDrag::TurnImage { from, .. } if from == angle(app));
+            let changed = !matches!(drag, CropDrag::Rotate { from, .. } | CropDrag::TurnImage { from, .. } if from == angle(app))
+                && !matches!(drag, CropDrag::MoveImage { rect, .. } if app.ui.crop_rect == Some(rect));
             if ok && changed {
                 app.crop.default_frame = false;
             }
