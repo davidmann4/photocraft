@@ -47,6 +47,7 @@ pub mod comps_ui;
 pub mod control;
 pub mod credits;
 pub mod crop_overlay;
+pub mod crop_presets;
 pub mod crop_shield;
 pub mod crop_size;
 pub mod crop_straighten;
