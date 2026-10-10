@@ -17,9 +17,11 @@
 //! `UiState::crop_angle` its turn, so ↵ commits the same `image.crop {…, angle}` (one undo step)
 //! whichever mode drew it. Default mode only changes the view: while the Crop tool shows a frame,
 //! the view's camera rotation is the frame's turn undone (`View::rotation = -crop_angle`), so the
-//! box shows upright. As in Photoshop 25.1, picking the tool turns a Rotate View (R) turn upright
-//! at once, and the view stays upright after ↵ or Esc (the R turn isn't restored). Classic Mode
-//! leaves the view alone.
+//! box shows upright. In Classic Mode the camera is upright (rotation 0) and the frame shows with
+//! its own turn on the image. As in Photoshop 25.1, picking the tool in either mode turns a Rotate
+//! View (R) turn upright at once, about the view's centre (the frame stays on the same image
+//! area), and the view stays upright after ↵ or Esc and when P switches modes (the R turn isn't
+//! restored).
 //!
 //! Both options live in `ToolOptions::crop_shield` (`classic_mode`, `auto_center_preview`), which
 //! `ui.inspect` reports and `ui.set {cropShield: {...}}` patches.
@@ -39,9 +41,9 @@ fn finite_frame(app: &PhotocraftApp) -> Option<[f64; 4]> {
     app.ui.crop_rect.filter(|r| r.iter().all(|v| v.is_finite()))
 }
 
-/// Default mode is driving the view: the Crop tool shows a frame, not in Classic Mode.
+/// The Crop tool drives the view: it shows a frame (either mode; [`sync`]).
 pub fn turns_view(app: &PhotocraftApp) -> bool {
-    app.ui.tool == Tool::Crop && !classic(app) && finite_frame(app).is_some() && app.session.active().is_some()
+    app.ui.tool == Tool::Crop && finite_frame(app).is_some() && app.session.active().is_some()
 }
 
 /// Gestures move and turn the image rather than the box (default mode with the Crop tool).
@@ -74,7 +76,8 @@ pub fn sync(app: &mut PhotocraftApp, pivot: Option<[f64; 2]>) {
         return;
     }
     let Some(i) = app.session.active_index() else { return };
-    let want = crate::rotate_view::wrap_deg(-crate::crop_ui::angle(app) as f32);
+    // Classic Mode: an upright camera, the frame turned on it. Default mode: the frame upright.
+    let want = if classic(app) { 0.0 } else { crate::rotate_view::wrap_deg(-crate::crop_ui::angle(app) as f32) };
     let flip = app.ui.view.flip_horizontal;
     let Some(v) = app.ui.views.get_mut(i) else { return };
     if v.rotation != want {
@@ -94,7 +97,7 @@ pub fn sync_frame(app: &mut PhotocraftApp) {
 /// A commit or cancel in default mode: the view is left upright (Photoshop 25.1 doesn't bring
 /// back a Rotate View turn).
 pub fn upright(app: &mut PhotocraftApp) {
-    if !moves_image(app) {
+    if app.ui.tool != Tool::Crop {
         return;
     }
     if let Some(v) = app.session.active_index().and_then(|i| app.ui.views.get_mut(i)) {
@@ -256,7 +259,7 @@ pub fn screen_to_doc_vec(app: &PhotocraftApp, s: [f64; 2]) -> [f64; 2] {
 /// Auto Center Preview: in default mode, pans the view so the box sits in the middle of the canvas
 /// (the view turns about its centre, so the box stays upright).
 pub fn auto_center(app: &mut PhotocraftApp) {
-    if !turns_view(app) || !app.ui.tool_options.crop_shield.auto_center_preview {
+    if !turns_view(app) || classic(app) || !app.ui.tool_options.crop_shield.auto_center_preview {
         return;
     }
     let Some(c) = finite_frame(app).map(crate::crop_ui::center) else { return };
@@ -489,9 +492,8 @@ mod tests {
         assert_eq!(app.ui.views[0].center, center, "and the view");
     }
 
-    /// The same frame and angle commit the same crop in both modes. In the default mode the view
-    /// stays upright after a commit or a cancel (Photoshop 25.1 doesn't restore a Rotate View
-    /// turn); Classic Mode leaves the view alone.
+    /// The same frame and angle commit the same crop in both modes, and in both the view stays
+    /// upright after a commit or a cancel (Photoshop 25.1 doesn't restore a Rotate View turn).
     #[test]
     fn commit_is_the_same_in_both_modes_and_the_view_stays_upright() {
         let mut out = Vec::new();
@@ -506,17 +508,16 @@ mod tests {
             app.ui.crop_angle = 30.0;
             app.crop.editing = true;
             crate::crop_ui::ensure_frame(&mut app);
-            let want = if classic { 20.0 } else { -30.0 };
+            let want = if classic { 0.0 } else { -30.0 };
             assert!((view_rotation(&app) - want).abs() < 1e-4, "classic={classic}: {}", view_rotation(&app));
             if !classic {
                 assert_upright(screen_box(&app));
             }
             let past = app.session.active().unwrap().history.past_len();
             crate::canvas::commit_crop(&mut app);
-            let after = if classic { 20.0 } else { 0.0 };
-            assert_eq!(view_rotation(&app), after, "classic={classic}: after ↵");
+            assert_eq!(view_rotation(&app), 0.0, "classic={classic}: after ↵");
             crate::crop_ui::ensure_frame(&mut app);
-            assert_eq!(view_rotation(&app), after, "classic={classic}: with the next frame");
+            assert_eq!(view_rotation(&app), 0.0, "classic={classic}: with the next frame");
             let st = app.session.active().unwrap();
             assert_eq!(st.history.past_len(), past + 1, "one undo step");
             let surf = st.doc.layers[0].surface().unwrap();
@@ -531,7 +532,7 @@ mod tests {
             screen_drag(&mut app, &[pos2(500.0, 300.0), pos2(370.0, 420.0)], NONE);
             crate::crop_ui::cancel(&mut app);
             crate::crop_ui::ensure_frame(&mut app);
-            assert_eq!(view_rotation(&app), if classic { -45.0 } else { 0.0 }, "classic={classic}: Esc");
+            assert_eq!(view_rotation(&app), 0.0, "classic={classic}: Esc");
         }
         assert_eq!(out[0].0, out[1].0, "same size");
         assert!(out[0].1 == out[1].1, "same pixels");
@@ -552,17 +553,35 @@ mod tests {
         app.ui.tool = Tool::Brush;
         crate::crop_ui::ensure_frame(&mut app);
         assert_eq!(view_rotation(&app), 0.0);
-        // Classic Mode leaves it alone (not checked against Photoshop).
+        // Classic Mode too (Photoshop 25.1): the camera goes upright about the view's centre and
+        // the frame stays on the same image area, keeping its own turn.
         let mut app = self::app();
         app.ui.tool_options.crop_shield.classic_mode = true;
+        app.ui.tool = Tool::Brush;
         app.ui.views[0].rotation = 30.0;
+        app.ui.crop_rect = Some([40.0, 30.0, 100.0, 70.0]);
+        app.ui.crop_angle = 12.0;
+        app.ui.tool = Tool::Crop;
         crate::crop_ui::ensure_frame(&mut app);
-        assert_eq!(view_rotation(&app), 30.0);
-        // P into the default mode turns it upright at once.
-        let ctx = egui::Context::default();
-        ctx.input_mut(|i| i.events.push(egui::Event::Key { key: egui::Key::P, physical_key: None, pressed: true, repeat: false, modifiers: NONE }));
-        assert!(crate::crop_shield::keys(&mut app, &ctx));
         assert_eq!(view_rotation(&app), 0.0);
+        assert_eq!(app.ui.views[0].center, center, "about the view's centre");
+        assert_eq!((app.ui.crop_rect, app.ui.crop_angle), (Some([40.0, 30.0, 100.0, 70.0]), 12.0), "the frame is unchanged");
+        // P switches modes without bringing the R turn back: default mode turns the view with the
+        // frame, Classic Mode puts the camera upright again.
+        let press_p = |app: &mut PhotocraftApp| {
+            let ctx = egui::Context::default();
+            ctx.input_mut(|i| i.events.push(egui::Event::Key { key: egui::Key::P, physical_key: None, pressed: true, repeat: false, modifiers: NONE }));
+            assert!(crate::crop_shield::keys(app, &ctx));
+        };
+        press_p(&mut app);
+        assert!(!classic(&app));
+        assert!((view_rotation(&app) - -12.0).abs() < 1e-4, "{}", view_rotation(&app));
+        press_p(&mut app);
+        assert!(classic(&app));
+        assert_eq!(view_rotation(&app), 0.0);
+        crate::crop_ui::cancel(&mut app);
+        crate::crop_ui::ensure_frame(&mut app);
+        assert_eq!(view_rotation(&app), 0.0, "Esc in Classic Mode: still upright");
     }
 
     fn key(app: &mut PhotocraftApp, key: egui::Key, modifiers: Modifiers) {

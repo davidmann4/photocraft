@@ -136,7 +136,8 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::P)) {
         let s = &mut app.ui.tool_options.crop_shield;
         s.classic_mode = !s.classic_mode;
-        // Into the default mode, the view turns with the frame at once (about its own centre).
+        // The view follows at once, about its own centre: default mode turns it with the frame,
+        // Classic Mode puts the camera upright (never back to a Rotate View turn).
         crate::crop_mode::sync(app, None);
         return true;
     }

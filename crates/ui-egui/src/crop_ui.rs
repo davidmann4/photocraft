@@ -68,8 +68,8 @@ pub enum CropDrag {
     /// Moving the frame `rect` grabbed at `start`.
     Move { start: [f64; 2], rect: [f64; 4] },
     /// Dragging an edge or corner: `hx`/`hy` are -1 (left/top), 1 (right/bottom) or 0 (untouched).
-    /// `view` is the view at the press when Auto Center Preview keeps the box's centre in place while it
-    /// is resized (default mode, `crop_mode::live_resize`), else `None`.
+    /// `view` is the view at the press when Auto Center Preview keeps the box's centre in place
+    /// while it is resized (default mode, `crop_mode::live_resize`), else `None`.
     Resize { hx: i8, hy: i8, start: [f64; 2], rect: [f64; 4], view: Option<crate::crop_mode::PressView> },
     /// Turning the frame about `center`: the pointer's direction from it at the press (radians)
     /// and the frame's angle then (degrees).
