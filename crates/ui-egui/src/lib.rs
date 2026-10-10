@@ -64,6 +64,7 @@ pub mod enable_rules;
 pub mod eraser_ui;
 pub mod export_dialog;
 pub mod eyedropper_ui;
+pub mod field_tab;
 pub mod file_dialog;
 pub mod file_open;
 pub mod file_ui;
@@ -840,7 +841,8 @@ impl PhotocraftApp {
         } else {
             jobs_ui::run(self, id, params)
         };
-        if r.is_ok() && ADDS_LAYER_MASK.contains(&id) {
+        let creates_adjustment_or_fill = id.starts_with("layer.newAdjustmentLayer.") || id.starts_with("layer.newFillLayer.");
+        if r.is_ok() && (ADDS_LAYER_MASK.contains(&id) || creates_adjustment_or_fill) {
             // Adding a layer mask targets it, as in Photoshop (#2166).
             self.ui.mask_target = true;
             self.ui.vector_mask_target = false;
@@ -1503,7 +1505,7 @@ impl PhotocraftApp {
     /// Viewing a layer mask (#196) targets it; a vector-mask target needs a vector mask on the
     /// active layer (a shape layer's path is its content, not a mask). Targeting a mask or the
     /// pixels brings back that target's foreground/background pair, as in Photoshop (#2166).
-    fn sync_mask_targets(&mut self) {
+    pub(crate) fn sync_mask_targets(&mut self) {
         if let Some(st) = self.session.active() {
             if photocraft_engine::mask_view_cmds::current(st).is_some() {
                 self.ui.mask_target = true;
@@ -1919,6 +1921,9 @@ impl PhotocraftApp {
         true
     }
 }
+
+#[cfg(test)]
+mod color_swatch_tests;
 
 #[cfg(test)]
 mod input_tests;
