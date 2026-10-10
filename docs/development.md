@@ -152,6 +152,8 @@ cargo run -p photocraft-cli -- commands --filter blur                    # the c
 
 Keep one `PcraftWriter` per open document: re-saving then only compresses and writes tiles that changed. Directory bundles verify objects on first encounter in a folder; later saves reuse them while their file size and modification time are unchanged, and re-verify changed objects, repair missing or damaged objects, and garbage-collect unreferenced ones. `format::Autosaver` writes snapshots into a recovery directory on a background thread. `list_recovery` / `recover` / `discard_recovery` implement crash recovery, and `format::RecoveryStore` is the lifecycle the desktop app uses: new documents autosave under per-launch keys (document ids restart every launch, so they never overwrite an older entry), and a recovered document adopts the entry it came from. That entry is replaced in place by the next autosave and removed only when the document is saved or closed, never just because it was recovered, so a second crash loses nothing. The web build has no crash recovery (no autosave services).
 
+At startup the desktop lists recovery metadata, then decodes one document at a time through the existing background-job system. The window stays usable, with recovery progress and Cancel in the status bar. Cancel skips the rest of that launch's recovery queue and prevents the current result from opening; the decoder may finish in the background. Failed or cancelled loads leave their recovery files intact for a later launch. Turning off Preferences › File Handling › Recover on launch skips discovery altogether.
+
 `photocraft-io` routes `.pcraft` through this crate in `import`/`export`, detecting it by magic or by extension.
 
 ## MCP (agents)
@@ -330,7 +332,7 @@ trunk build --release              # writes ../../dist/web (index.html, .js glue
 trunk serve --release              # dev server on http://127.0.0.1:8765
 ```
 
-Any static file server works for `dist/web`, for example `python3 -m http.server 8765` run inside that directory. Trunk downloads the matching `wasm-bindgen` and `wasm-opt` itself. `trunk build --release` uses the `wasm-release` Cargo profile (`data-cargo-profile` in `index.html`: fat LTO, opt-level "s" except the pixel crates). The `.wasm` is about 18.8 MiB raw, 7.8 MiB gzipped and 5.6 MiB with Brotli; serve it with compression. Keep it under 24 MiB (`packaging/web/package.sh` enforces this; Cloudflare's per-file cap is 25 MiB). The web build never embeds craft-fonts (see Fonts above). To see where the bytes go, run `twiggy top -n 40` on `target/wasm32-unknown-unknown/wasm-release/photocraft-web.wasm` (before wasm-opt strips the names).
+Any static file server works for `dist/web`, for example `python3 -m http.server 8765` run inside that directory. Trunk downloads the matching `wasm-bindgen` and `wasm-opt` itself. `trunk build --release` uses the `wasm-release` Cargo profile (`data-cargo-profile` in `index.html`: fat LTO, opt-level "s" except the pixel crates). The `.wasm` is about 18.8 MiB raw, 7.8 MiB gzipped and 5.6 MiB with Brotli; serve it with compression. Keep it under 24 MiB (`packaging/web/package.sh` enforces this; Cloudflare's per-file cap is 25 MiB). Pull-request CI also builds the actual browser app with the same pinned Trunk version as the release job and runs `packaging/web/package.sh`, including the relative-URL and 24 MiB checks. The `web build and wasm size gate` check runs on main and on PRs that change something the web build compiles or packages (`apps/photocraft-web`, `packaging/web`, crate sources and manifests, `Cargo.toml`/`Cargo.lock`, the CI workflow), and reports the resulting wasm size in the Actions job summary. The web build never embeds craft-fonts (see Fonts above). To see where the bytes go, run `twiggy top -n 40` on `target/wasm32-unknown-unknown/wasm-release/photocraft-web.wasm` (before wasm-opt strips the names).
 
 URL flags: `?webgl` forces the WebGL2 backend, and `?cpu` forces the CPU canvas path.
 
@@ -392,6 +394,27 @@ cargo run --release -p photocraft-ui-egui --example snapshot -- \
 Input calls (`ui.key`, `ui.type`, `ui.click`) now reply only after the app has processed the events,
 so a following `ui.inspect` observes their effect.
 
+
+## Remove Tool quality
+
+`cargo run --release -p photocraft-engine --example remove_quality -- <dir> [out dir]` fills
+holes (discs and thin lines over background) in five photos with `photocraft_algo::remove` and
+prints, per hole, the PSNR against the original, `texture` (the fill's mean gradient over the
+original's: below 1 it is smoother than what it replaces) and `seam` (the same on the band along the
+hole's edge: above 1 the edge shows). With an out dir it writes original | hole | fill crops. The
+photos are public domain, not committed; download them at 1920 px wide into `<dir>` as:
+
+| File | Photo |
+|---|---|
+| `01.jpg` | [The Tetons and the Snake River](https://commons.wikimedia.org/wiki/File:Adams_The_Tetons_and_the_Snake_River.jpg), Ansel Adams, 1942 (U.S. National Archives) |
+| `02.jpg` | [Ansel Adams, National Archives 79-AAB-01](https://commons.wikimedia.org/wiki/File:Ansel_Adams_-_National_Archives_79-AAB-01.jpg) (U.S. National Archives) |
+| `03.jpg` | [Hiking at Crane Meadows National Wildlife Refuge](https://commons.wikimedia.org/wiki/File:Hiking_at_Crane_Meadows_National_Wildlife_Refuge_(49018614166).jpg) (USFWS) |
+| `04.jpg` | [Meadow Anemone, Lake Andes National Wildlife Refuge](https://commons.wikimedia.org/wiki/File:Meadow_Anemone_Lake_Andes_National_Wildlife_Refuge_South_Dakota_(53923253226).jpg) (USFWS) |
+| `06.jpg` | [Line5070, NOAA Photo Library](https://commons.wikimedia.org/wiki/File:Line5070_-_Flickr_-_NOAA_Photo_Library.jpg) (NOAA) |
+
+`https://commons.wikimedia.org/wiki/Special:FilePath/<file name>?width=1600` serves each at the
+size the cases were placed for (Commons rounds it to 1920). Timing on a 24 MP document through the
+command: `cargo run --release -p photocraft-engine --example remove_bench`.
 
 ## Test corpora
 
