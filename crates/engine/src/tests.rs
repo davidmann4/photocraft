@@ -1284,3 +1284,39 @@ fn document_inspect_and_activate_invalid_index() {
     let err_act = s.execute("document.activate", json!({"document": 9})).unwrap_err();
     assert_eq!(err_act.to_string(), "no document at index 9");
 }
+
+/// #2166, measured in Photoshop 25.1: a layer mask and the layer pixels keep separate
+/// foreground/background pairs, swapped when the edit target changes.
+#[test]
+fn mask_and_pixels_keep_their_own_colour_pair() {
+    const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+    const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+    const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+    const GRAY: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
+    let [white, black] = ToolState::MASK_COLORS;
+    let mut s = session_with_doc();
+    s.execute("tools.setColors", json!({"foreground": "#ff0000", "background": "#0000ff"})).unwrap();
+    let pair = |s: &Session| (s.tools.foreground, s.tools.background);
+    assert!(!s.tools.target_mask(false), "already on the pixels: nothing changes");
+    assert_eq!(pair(&s), (RED, BLUE));
+    assert!(s.tools.target_mask(true));
+    assert_eq!(pair(&s), (white, black), "a mask starts at white/black");
+    assert!(!s.tools.target_mask(true), "targeting it again changes nothing");
+    assert_eq!(pair(&s), (white, black));
+    s.tools.target_mask(false);
+    assert_eq!(pair(&s), (RED, BLUE), "the pixels get their colours back");
+    s.execute("tools.setColors", json!({"foreground": "#00ff00"})).unwrap();
+    s.tools.target_mask(true);
+    assert_eq!(pair(&s), (white, black));
+    s.tools.target_mask(false);
+    assert_eq!(pair(&s), (GREEN, BLUE), "a colour picked on the pixels is remembered");
+    // A colour picked while the mask is targeted is remembered for masks.
+    s.tools.target_mask(true);
+    s.execute("tools.setColors", json!({"foreground": "#808080"})).unwrap();
+    let mask_fg = s.tools.foreground;
+    assert!((mask_fg[0] - GRAY[0]).abs() < 0.01);
+    s.tools.target_mask(false);
+    assert_eq!(pair(&s), (GREEN, BLUE));
+    s.tools.target_mask(true);
+    assert_eq!(pair(&s), (mask_fg, black));
+}
