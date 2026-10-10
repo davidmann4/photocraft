@@ -2,21 +2,22 @@
 //!
 //! - **Default mode** (Photoshop's default, Use Classic Mode off): the crop box stays upright on
 //!   screen and the image turns behind it. A drag outside the box turns the image about the box's
-//!   centre (⇧ in 15° steps, the angle beside the pointer), a drag inside moves the image under the
-//!   box (the box stays put), the arrow keys nudge the image, and the handles resize the box on
-//!   screen as usual. With **Auto Center Preview** on (the default), drawing or resizing the box
-//!   re-pans the view so the box sits in the middle of the canvas.
+//!   centre (⇧ in 15° steps; the readout beside the pointer is the image's turn, clockwise
+//!   positive), a drag inside moves the image under the box (the box stays put), the arrow keys
+//!   nudge the image, and the handles resize the box on screen as usual. With **Auto Center
+//!   Preview** on (the default), a box being resized stays centred where it was while the handle
+//!   follows the pointer, and a drawn or resized box moves to the middle of the canvas on release.
 //! - **Classic Mode** (P toggles it while the Crop tool shows a box): the box moves and turns over
-//!   a fixed image (`crop_ui`).
+//!   a fixed image (`crop_ui`). Show Cropped Area and Auto Center Preview are greyed out in it, and
+//!   the area outside the box shows whatever Show Cropped Area says (Photoshop 25.1).
 //!
 //! The crop model is the same in both: `UiState::crop_rect` is the frame in document px and
 //! `UiState::crop_angle` its turn, so ↵ commits the same `image.crop {…, angle}` (one undo step)
-//! whichever mode drew it. Default mode only changes the view: while a frame is edited (from the
-//! first press, key or Straighten until commit or cancel) the view's camera rotation is the
-//! frame's turn undone (`View::rotation = -crop_angle`), so the box shows upright. The view the
-//! user had (a Rotate View (R) turn, its centre) is kept in [`SavedView`] and put back when the
-//! crop is committed or cancelled, the tool is left, or Classic Mode is switched on. The
-//! untouched default frame isn't being edited, so picking the tool leaves an R turn alone.
+//! whichever mode drew it. Default mode only changes the view: while the Crop tool shows a frame,
+//! the view's camera rotation is the frame's turn undone (`View::rotation = -crop_angle`), so the
+//! box shows upright. As in Photoshop 25.1, picking the tool turns a Rotate View (R) turn upright
+//! at once, and the view stays upright after ↵ or Esc (the R turn isn't restored). Classic Mode
+//! leaves the view alone.
 //!
 //! Both options live in `ToolOptions::crop_shield` (`classic_mode`, `auto_center_preview`), which
 //! `ui.inspect` reports and `ui.set {cropShield: {...}}` patches.
@@ -27,14 +28,6 @@ use crate::PhotocraftApp;
 use crate::canvas::ViewXform;
 use crate::state::Tool;
 
-/// The view as it was before default mode turned it for a crop: restored afterwards.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SavedView {
-    doc: photocraft_doc::DocId,
-    rotation: f32,
-    center: [f32; 2],
-}
-
 /// Use Classic Mode is on: the box turns and moves over the image.
 pub fn classic(app: &PhotocraftApp) -> bool {
     app.ui.tool_options.crop_shield.classic_mode
@@ -44,9 +37,9 @@ fn finite_frame(app: &PhotocraftApp) -> Option<[f64; 4]> {
     app.ui.crop_rect.filter(|r| r.iter().all(|v| v.is_finite()))
 }
 
-/// Default mode is driving the view: the Crop tool, not Classic Mode, and a frame being edited.
+/// Default mode is driving the view: the Crop tool shows a frame, not in Classic Mode.
 pub fn turns_view(app: &PhotocraftApp) -> bool {
-    app.ui.tool == Tool::Crop && !classic(app) && finite_frame(app).is_some() && (app.crop.editing || app.crop.drag.is_some()) && app.session.active().is_some()
+    app.ui.tool == Tool::Crop && !classic(app) && finite_frame(app).is_some() && app.session.active().is_some()
 }
 
 /// Gestures move and turn the image rather than the box (default mode with the Crop tool).
@@ -72,40 +65,99 @@ pub fn view_rotation(app: &PhotocraftApp) -> f32 {
 }
 
 /// Turns the active view so the frame shows upright while default mode drives it, pivoting about
-/// document point `pivot` (the frame's centre when `None`) so that point stays put on screen; puts
-/// the user's view back ([`restore`]) when it no longer does.
+/// document point `pivot` so that point stays put on screen (the view's own centre when `None`:
+/// picking the tool, a commit or a cancel only straighten the view).
 pub fn sync(app: &mut PhotocraftApp, pivot: Option<[f64; 2]>) {
     if !turns_view(app) {
-        restore(app);
         return;
     }
-    let (Some(i), Some(doc), Some(frame)) = (app.session.active_index(), app.session.active().map(|st| st.doc.id), finite_frame(app)) else { return };
-    if app.crop.saved_view.is_some_and(|s| s.doc != doc) {
-        restore(app);
-    }
+    let Some(i) = app.session.active_index() else { return };
     let want = crate::rotate_view::wrap_deg(-crate::crop_ui::angle(app) as f32);
     let flip = app.ui.view.flip_horizontal;
-    let pivot = pivot.filter(|p| p.iter().all(|v| v.is_finite())).unwrap_or_else(|| crate::crop_ui::center(frame));
     let Some(v) = app.ui.views.get_mut(i) else { return };
-    if app.crop.saved_view.is_none() {
-        app.crop.saved_view = Some(SavedView { doc, rotation: v.rotation, center: v.center });
-    }
     if v.rotation != want {
-        v.center = pivot_center(v.center, pivot, v.rotation, want, flip);
+        if let Some(p) = pivot.filter(|p| p.iter().all(|v| v.is_finite())) {
+            v.center = pivot_center(v.center, p, v.rotation, want, flip);
+        }
         v.rotation = want;
     }
 }
 
-/// Puts back the view default mode turned (its rotation and centre), if any.
-pub fn restore(app: &mut PhotocraftApp) {
-    let Some(s) = app.crop.saved_view.take() else { return };
-    let Some(i) = app.session.documents().iter().position(|d| d.doc.id == s.doc) else { return };
-    if let Some(v) = app.ui.views.get_mut(i) {
-        v.rotation = crate::rotate_view::wrap_deg(s.rotation);
-        if s.center.iter().all(|c| c.is_finite()) {
-            v.center = s.center;
+/// [`sync`] about the frame's centre: the box stays put on screen while the image turns.
+pub fn sync_frame(app: &mut PhotocraftApp) {
+    let c = finite_frame(app).map(crate::crop_ui::center);
+    sync(app, c);
+}
+
+/// A commit or cancel in default mode: the view is left upright (Photoshop 25.1 doesn't bring
+/// back a Rotate View turn).
+pub fn upright(app: &mut PhotocraftApp) {
+    if !moves_image(app) {
+        return;
+    }
+    if let Some(v) = app.session.active_index().and_then(|i| app.ui.views.get_mut(i)) {
+        v.rotation = 0.0;
+    }
+}
+
+/// The image's turn the default mode shows beside the pointer: clockwise on screen is positive,
+/// the frame's angle on the image undone.
+pub fn image_turn(frame_angle: f64) -> f64 {
+    let a = crate::crop_ui::normalized_angle(-frame_angle);
+    // Never "-0.0°".
+    if a == 0.0 { 0.0 } else { a }
+}
+
+/// A live-centred resize ([`live_resize`]): the frame `rect` and handle (`hx`, `hy`) at the press,
+/// grabbed at document point `start`; the pointer now at `q` (in the press view); the frame's turn
+/// `deg`, the aspect `ratio` to hold and ⌥ (resize about the centre).
+#[derive(Clone, Copy, Debug)]
+pub struct LiveResize {
+    pub rect: [f64; 4],
+    pub deg: f64,
+    pub hx: i8,
+    pub hy: i8,
+    pub start: [f64; 2],
+    pub q: [f64; 2],
+    pub ratio: Option<f64>,
+    pub alt: bool,
+}
+
+/// Auto Center Preview during a handle drag: the box stays centred on screen where it was at the
+/// press and grows or shrinks symmetrically there, so the handle stays under the pointer, while on
+/// the image the opposite edge stays put (the centre with ⌥), as in a plain resize. Everything is
+/// computed from the press, so the view following the frame can't feed back into the drag.
+pub fn live_resize(app: &mut PhotocraftApp, g: LiveResize, press: PressView) {
+    let LiveResize { rect, deg, hx, hy, start, q, ratio, alt } = g;
+    let c0 = crate::crop_ui::center(rect);
+    let (w0, h0) = (rect[2] - rect[0], rect[3] - rect[1]);
+    // The pointer's offset from where it grabbed the handle, in the frame's own axes; the handle
+    // moves by it on screen, so each half extent grows by it.
+    let d = crate::crop_ui::turn([q[0] - start[0], q[1] - start[1]], [0.0, 0.0], -deg);
+    let local = [-w0 / 2.0, -h0 / 2.0, w0 / 2.0, h0 / 2.0];
+    let n = crate::crop_ui::resized(local, hx, hy, d, ratio, true);
+    let (w1, h1) = (n[2] - n[0], n[3] - n[1]);
+    // On the image the opposite edge stays put (with ⌥ the centre), so the centre moves.
+    let shift = if alt { [0.0, 0.0] } else { [f64::from(hx) * (w1 - w0) / 2.0, f64::from(hy) * (h1 - h0) / 2.0] };
+    let s = crate::crop_ui::turn(shift, [0.0, 0.0], deg);
+    let c1 = [c0[0] + s[0], c0[1] + s[1]];
+    let f = [c1[0] - w1 / 2.0, c1[1] - h1 / 2.0, c1[0] + w1 / 2.0, c1[1] + h1 / 2.0];
+    if !f.iter().all(|v| v.is_finite()) {
+        return;
+    }
+    app.ui.crop_rect = Some(f);
+    // The view follows the centre, so the box stays where it was on screen.
+    if let Some(v) = app.session.active_index().and_then(|i| app.ui.views.get_mut(i)) {
+        let c = [press.center[0] + s[0] as f32, press.center[1] + s[1] as f32];
+        if c.iter().all(|x| x.is_finite()) {
+            v.center = c;
         }
     }
+}
+
+/// Auto Center Preview while a handle is dragged in default mode.
+pub fn live_center(app: &PhotocraftApp) -> bool {
+    moves_image(app) && app.ui.tool_options.crop_shield.auto_center_preview
 }
 
 /// Moves the image under the box by document vector `d` as the view shows it: the frame moves by
@@ -164,7 +216,9 @@ pub fn to_press(app: &PhotocraftApp, press: Option<PressView>, p: [f64; 2]) -> [
 /// point the canvas would report for the same screen position now.
 pub fn control_point(app: &PhotocraftApp, p: [f64; 2]) -> [f64; 2] {
     let press = match app.crop.drag {
-        Some(crate::crop_ui::CropDrag::MoveImage { view, .. } | crate::crop_ui::CropDrag::TurnImage { view, .. }) => view,
+        Some(
+            crate::crop_ui::CropDrag::MoveImage { view, .. } | crate::crop_ui::CropDrag::TurnImage { view, .. } | crate::crop_ui::CropDrag::Resize { view, .. },
+        ) => view,
         _ => None,
     };
     match (press, press_view(app)) {
@@ -325,7 +379,36 @@ mod tests {
     }
 
     #[test]
-    fn handles_resize_the_upright_box_and_auto_center_recentres_it() {
+    fn the_readout_is_the_images_turn_clockwise_positive() {
+        let mut app = app();
+        with_frame(&mut app);
+        // A 30° clockwise sweep on screen, held mid-drag.
+        let d = |app: &PhotocraftApp, p: Pos2| xf(app).to_doc(p);
+        let a = 30f32.to_radians();
+        let (p0, p1) = (pos2(450.0, 300.0), pos2(370.0 + 80.0 * a.cos(), 300.0 + 80.0 * a.sin()));
+        let s = d(&app, p0);
+        tool_event(&mut app, ToolEvent::Down { x: s[0], y: s[1], pressure: 1.0 }, NONE);
+        let m = d(&app, p1);
+        tool_event(&mut app, ToolEvent::Move { x: m[0], y: m[1], pressure: 1.0 }, NONE);
+        let shown = crate::crop_ui::turning(&app).unwrap();
+        assert!((shown - 30.0).abs() < 0.01, "clockwise is positive: {shown}");
+        assert!((crate::crop_ui::angle(&app) - -30.0).abs() < 0.01, "the frame turns the other way on the image");
+        let m = d(&app, p1);
+        tool_event(&mut app, ToolEvent::Up { x: m[0], y: m[1] }, NONE);
+        assert_eq!(image_turn(0.0).to_string(), "0", "never -0");
+        // Classic Mode shows the frame's own turn, clockwise positive as before.
+        let mut app = self::app();
+        app.ui.tool_options.crop_shield.classic_mode = true;
+        with_frame(&mut app);
+        let s = d(&app, p0);
+        tool_event(&mut app, ToolEvent::Down { x: s[0], y: s[1], pressure: 1.0 }, NONE);
+        let m = d(&app, p1);
+        tool_event(&mut app, ToolEvent::Move { x: m[0], y: m[1], pressure: 1.0 }, NONE);
+        assert!((crate::crop_ui::turning(&app).unwrap() - 30.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn auto_center_keeps_the_box_centred_while_a_handle_is_dragged() {
         for auto in [true, false] {
             let mut app = app();
             app.ui.tool_options.crop_shield.auto_center_preview = auto;
@@ -334,28 +417,63 @@ mod tests {
             screen_drag(&mut app, &[pos2(450.0, 300.0), pos2(370.0, 380.0)], NONE);
             let q = screen_box(&app);
             assert_upright(q);
-            // The box's right edge on screen: drag it 20 further right.
+            let mid = |q: [Pos2; 4]| pos2((q[0].x + q[2].x) / 2.0, (q[0].y + q[2].y) / 2.0);
+            // The box's right edge on screen, dragged 10 then 20 further right.
             let right = pos2(q[1].x, (q[1].y + q[2].y) / 2.0);
             assert_eq!(crate::crop_ui::cursor(&app, xf(&app).to_doc(right)), Some(egui::CursorIcon::ResizeHorizontal), "screen-space arrow");
-            screen_drag(&mut app, &[right, right + vec2(20.0, 0.0)], NONE);
+            let at = |app: &PhotocraftApp, p: Pos2| xf(app).to_doc(p);
+            let s = at(&app, right);
+            tool_event(&mut app, ToolEvent::Down { x: s[0], y: s[1], pressure: 1.0 }, NONE);
+            for dx in [10.0, 20.0] {
+                let m = at(&app, right + vec2(dx, 0.0));
+                tool_event(&mut app, ToolEvent::Move { x: m[0], y: m[1], pressure: 1.0 }, NONE);
+                let n = screen_box(&app);
+                assert_upright(n);
+                assert!((n[1].x - (right.x + dx)).abs() < 0.02, "auto={auto} dx={dx}: the handle follows the pointer: {n:?}");
+                if auto {
+                    assert!(mid(n).distance(mid(q)) < 0.02, "dx={dx}: live, the box stays centred: {:?} vs {:?}", mid(n), mid(q));
+                    assert!(((n[1].x - n[0].x) - (q[1].x - q[0].x) - 2.0 * dx).abs() < 0.02, "it grows on both sides");
+                } else {
+                    assert!((n[0].x - q[0].x).abs() < 0.02, "the left edge stays put");
+                }
+                assert!(((n[3].y - n[0].y) - (q[3].y - q[0].y)).abs() < 0.02);
+            }
+            let m = at(&app, right + vec2(20.0, 0.0));
+            tool_event(&mut app, ToolEvent::Up { x: m[0], y: m[1] }, NONE);
             let n = screen_box(&app);
-            assert_upright(n);
-            assert!(((n[1].x - n[0].x) - (q[1].x - q[0].x) - 20.0).abs() < 0.02, "{n:?} vs {q:?}");
-            assert!(((n[3].y - n[0].y) - (q[3].y - q[0].y)).abs() < 0.02);
-            let mid = pos2((n[0].x + n[2].x) / 2.0, (n[0].y + n[2].y) / 2.0);
             if auto {
-                assert!(mid.distance(pos2(400.0, 300.0)) < 0.05, "Auto Center Preview centres the box: {mid:?}");
+                assert!(mid(n).distance(pos2(400.0, 300.0)) < 0.05, "on release it moves to the middle: {:?}", mid(n));
+                // On the image, the opposite edge stayed put: the frame grew 40 px from it.
+                let r = app.ui.crop_rect.unwrap();
+                assert!(((r[2] - r[0]) - 100.0).abs() < 1e-3 && ((r[3] - r[1]) - 40.0).abs() < 1e-3, "{r:?}");
+                let left = corners(r, crate::crop_ui::angle(&app))[0];
+                let was = corners([40.0, 30.0, 100.0, 70.0], -90.0)[0];
+                assert!((left[0] - was[0]).abs() < 1e-3 && (left[1] - was[1]).abs() < 1e-3, "{left:?} vs {was:?}");
             } else {
-                assert!((n[0].x - q[0].x).abs() < 0.02 && (n[0].y - q[0].y).abs() < 0.02, "the left edge stays put");
-                assert!(mid.distance(pos2(380.0, 300.0)) < 0.05, "{mid:?}");
+                assert!(mid(n).distance(pos2(380.0, 300.0)) < 0.05, "{:?}", mid(n));
             }
         }
+        // ⌥: about the centre, and a collapsed drag puts frame and view back.
+        let mut app = app();
+        with_frame(&mut app);
+        let q = screen_box(&app);
+        let center = app.ui.views[0].center;
+        let right = pos2(q[1].x, (q[1].y + q[2].y) / 2.0);
+        screen_drag(&mut app, &[right, right + vec2(10.0, 0.0)], Modifiers::ALT);
+        let r = app.ui.crop_rect.unwrap();
+        assert!(((r[0] + r[2]) / 2.0 - 70.0).abs() < 1e-3 && ((r[2] - r[0]) - 80.0).abs() < 1e-3, "{r:?}");
+        let mut app = self::app();
+        with_frame(&mut app);
+        screen_drag(&mut app, &[right, pos2(370.0, 300.0)], NONE);
+        assert_eq!(app.ui.crop_rect, Some([40.0, 30.0, 100.0, 70.0]), "too small: the frame is back");
+        assert_eq!(app.ui.views[0].center, center, "and the view");
     }
 
-    /// The same frame and angle commit the same crop in both modes, and the view the user had
-    /// (Rotate View) comes back after a commit or a cancel.
+    /// The same frame and angle commit the same crop in both modes. In the default mode the view
+    /// stays upright after a commit or a cancel (Photoshop 25.1 doesn't restore a Rotate View
+    /// turn); Classic Mode leaves the view alone.
     #[test]
-    fn commit_is_the_same_in_both_modes_and_the_view_comes_back() {
+    fn commit_is_the_same_in_both_modes_and_the_view_stays_upright() {
         let mut out = Vec::new();
         for classic in [true, false] {
             let mut app = app();
@@ -364,7 +482,6 @@ mod tests {
             app.run("select.deselect", json!({})).unwrap();
             app.ui.tool_options.crop_shield.classic_mode = classic;
             app.ui.views[0].rotation = 20.0;
-            let center = app.ui.views[0].center;
             with_frame(&mut app);
             app.ui.crop_angle = 30.0;
             app.crop.editing = true;
@@ -376,74 +493,105 @@ mod tests {
             }
             let past = app.session.active().unwrap().history.past_len();
             crate::canvas::commit_crop(&mut app);
-            assert_eq!(view_rotation(&app), 20.0, "classic={classic}: the R turn is back after ↵");
+            let after = if classic { 20.0 } else { 0.0 };
+            assert_eq!(view_rotation(&app), after, "classic={classic}: after ↵");
+            crate::crop_ui::ensure_frame(&mut app);
+            assert_eq!(view_rotation(&app), after, "classic={classic}: with the next frame");
             let st = app.session.active().unwrap();
             assert_eq!(st.history.past_len(), past + 1, "one undo step");
             let surf = st.doc.layers[0].surface().unwrap();
             let px: Vec<[f32; 4]> =
                 (0..st.doc.size.width as i32).flat_map(|x| (0..st.doc.size.height as i32).map(move |y| (x, y))).map(|(x, y)| surf.rgba(x, y)).collect();
             out.push((st.doc.size, px));
-            // Cancel puts the rotation and the centre back.
+            // Esc.
             let mut app = self::app();
             app.ui.tool_options.crop_shield.classic_mode = classic;
             app.ui.views[0].rotation = -45.0;
             with_frame(&mut app);
-            screen_drag(&mut app, &[pos2(370.0, 300.0), pos2(390.0, 310.0)], NONE);
             screen_drag(&mut app, &[pos2(500.0, 300.0), pos2(370.0, 420.0)], NONE);
             crate::crop_ui::cancel(&mut app);
-            assert_eq!((view_rotation(&app), app.ui.views[0].center), (-45.0, center), "classic={classic}: Esc");
-            // So does leaving the tool or switching to Classic Mode.
-            let mut app = self::app();
-            app.ui.tool_options.crop_shield.classic_mode = classic;
-            app.ui.views[0].rotation = 10.0;
-            with_frame(&mut app);
-            screen_drag(&mut app, &[pos2(500.0, 300.0), pos2(370.0, 420.0)], NONE);
-            app.ui.tool_options.crop_shield.classic_mode = true;
             crate::crop_ui::ensure_frame(&mut app);
-            assert_eq!(view_rotation(&app), 10.0);
-            app.ui.tool_options.crop_shield.classic_mode = classic;
-            app.ui.tool = Tool::Brush;
-            crate::crop_ui::ensure_frame(&mut app);
-            assert_eq!(view_rotation(&app), 10.0);
+            assert_eq!(view_rotation(&app), if classic { -45.0 } else { 0.0 }, "classic={classic}: Esc");
         }
         assert_eq!(out[0].0, out[1].0, "same size");
         assert!(out[0].1 == out[1].1, "same pixels");
     }
 
     #[test]
-    fn the_untouched_default_frame_leaves_an_r_turn_alone() {
+    fn picking_the_crop_tool_turns_a_rotated_view_upright() {
         let mut app = app();
-        app.ui.views[0].rotation = 25.0;
+        app.ui.tool = Tool::Brush;
+        app.ui.views[0].rotation = 30.0;
+        let center = app.ui.views[0].center;
+        app.ui.tool = Tool::Crop;
         crate::crop_ui::ensure_frame(&mut app);
-        assert!(app.crop.default_frame);
-        assert_eq!(view_rotation(&app), 25.0);
-        // The first press on it turns the view upright about the pressed point (it stays put).
-        let p = pos2(300.0, 280.0);
-        let d = xf(&app).to_doc(p);
-        tool_event(&mut app, ToolEvent::Down { x: d[0], y: d[1], pressure: 1.0 }, NONE);
+        assert!(app.crop.default_frame && !app.crop.editing, "no click needed");
         assert_eq!(view_rotation(&app), 0.0);
-        assert!(xf(&app).to_screen(d[0] as f32, d[1] as f32).distance(p) < 0.01);
-        tool_event(&mut app, ToolEvent::Up { x: d[0], y: d[1] }, NONE);
-        crate::crop_ui::cancel(&mut app);
-        assert_eq!(view_rotation(&app), 25.0);
+        assert_eq!(app.ui.views[0].center, center, "about the view's centre");
+        // Leaving the tool doesn't bring the turn back.
+        app.ui.tool = Tool::Brush;
+        crate::crop_ui::ensure_frame(&mut app);
+        assert_eq!(view_rotation(&app), 0.0);
+        // Classic Mode leaves it alone (not checked against Photoshop).
+        let mut app = self::app();
+        app.ui.tool_options.crop_shield.classic_mode = true;
+        app.ui.views[0].rotation = 30.0;
+        crate::crop_ui::ensure_frame(&mut app);
+        assert_eq!(view_rotation(&app), 30.0);
+        // P into the default mode turns it upright at once.
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| i.events.push(egui::Event::Key { key: egui::Key::P, physical_key: None, pressed: true, repeat: false, modifiers: NONE }));
+        assert!(crate::crop_shield::keys(&mut app, &ctx));
+        assert_eq!(view_rotation(&app), 0.0);
+    }
+
+    fn key(app: &mut PhotocraftApp, key: egui::Key, modifiers: Modifiers) {
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| i.events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }));
+        crate::shortcuts::handle(app, &ctx);
     }
 
     #[test]
-    fn arrows_nudge_the_image_and_x_recentres() {
+    fn arrows_nudge_the_image_shift_by_ten_and_x_recentres() {
         let mut app = app();
         with_frame(&mut app);
         app.crop.editing = true;
         app.ui.crop_angle = -90.0;
         crate::crop_ui::ensure_frame(&mut app);
         let before = screen_box(&app);
-        let origin = xf(&app).to_screen(0.0, 0.0);
-        assert!(crate::crop_ui::nudge(&mut app, 10.0, 0.0));
+        let img = |app: &PhotocraftApp| xf(app).to_screen(0.0, 0.0);
+        let origin = img(&app);
+        key(&mut app, egui::Key::ArrowRight, NONE);
         assert!(close(screen_box(&app), before), "the box stays put");
-        assert!((xf(&app).to_screen(0.0, 0.0) - origin - vec2(10.0, 0.0)).length() < 0.02, "the image moved right on screen");
+        assert!((img(&app) - origin - vec2(1.0, 0.0)).length() < 0.02, "the image moved 1 px right on screen");
+        key(&mut app, egui::Key::ArrowDown, Modifiers::SHIFT);
+        assert!((img(&app) - origin - vec2(1.0, 10.0)).length() < 0.02, "⇧: 10 px");
+        assert!(close(screen_box(&app), before));
         assert!(crate::crop_ui::swap_orientation(&mut app));
         assert_upright(screen_box(&app));
         let q = screen_box(&app);
         assert!(pos2((q[0].x + q[2].x) / 2.0, (q[0].y + q[2].y) / 2.0).distance(pos2(400.0, 300.0)) < 0.05, "Auto Center Preview");
+    }
+
+    /// Photoshop 25.1 greys out Show Cropped Area and Auto Center Preview in Classic Mode. Show
+    /// Cropped Area then acts as on (an assumption) and H does nothing; the stored choice stays.
+    #[test]
+    fn classic_mode_shows_the_cropped_area_and_h_does_nothing() {
+        let mut app = app();
+        crate::crop_ui::ensure_frame(&mut app);
+        app.ui.tool_options.crop_shield.show_cropped_area = false;
+        assert!(crate::crop_shield::hides_outside(&app));
+        app.ui.tool_options.crop_shield.classic_mode = true;
+        assert!(!crate::crop_shield::hides_outside(&app));
+        let canvas = egui::Color32::from_rgb(40, 40, 40);
+        assert_ne!(crate::crop_shield::fill(&app.ui.tool_options.crop_shield, canvas, false), Some(canvas), "the shield, not the opaque canvas");
+        key(&mut app, egui::Key::H, NONE);
+        assert_eq!(app.ui.tool, Tool::Crop, "H is taken, not the Hand tool");
+        assert!(!app.ui.tool_options.crop_shield.show_cropped_area, "and changes nothing");
+        app.ui.tool_options.crop_shield.classic_mode = false;
+        assert!(crate::crop_shield::hides_outside(&app), "the stored choice is back");
+        key(&mut app, egui::Key::H, NONE);
+        assert!(app.ui.tool_options.crop_shield.show_cropped_area);
     }
 
     #[test]
@@ -535,6 +683,10 @@ mod tests {
                 crate::crop_ui::swap_orientation(&mut app);
                 auto_center(&mut app);
                 shift_image(&mut app, [f64::NAN, f64::INFINITY]);
+                let press = PressView { rotation: f32::NAN, center: [f32::INFINITY, 0.0] };
+                let g = LiveResize { rect: frame, deg: angle, hx: 1, hy: -1, start: [0.0, f64::NAN], q: [1e300, -1e300], ratio: Some(f64::NAN), alt: false };
+                live_resize(&mut app, g, press);
+                assert!(app.ui.crop_rect.is_none_or(|r| r.iter().all(|v| v.is_finite()) || r == frame), "{frame:?} {angle}");
                 let v = &app.ui.views[0];
                 assert!(v.rotation.is_finite() && v.center.iter().all(|c| c.is_finite()), "{frame:?} {angle}: {v:?}");
                 crate::crop_ui::cancel(&mut app);
@@ -550,7 +702,7 @@ mod tests {
         sync(&mut app, None);
         auto_center(&mut app);
         shift_image(&mut app, [1.0, 1.0]);
-        restore(&mut app);
+        upright(&mut app);
     }
 
     #[test]

@@ -3310,11 +3310,26 @@ fn draw_beyond_canvas(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &Vie
     let square = app.session.prefs().transparency_and_gamut.square();
     let checker_id = square.map(|_| checker(app, &ctx));
     let around = ring(c.extent.union(&fr), doc.bounds());
+    // A turned view (Rotate View, or the Crop tool's default mode turning the image behind its
+    // box) draws each band as its turned quad: its screen bounding box would stretch the band's
+    // texture and spread the checkerboard past the band.
+    let turned = xf.rotation != 0.0;
+    let checker_uv = |p: Pos2, sq: f32| ((p - canvas.min) / (2.0 * sq)).to_pos2();
     for &b in &around {
+        if turned {
+            let q = doc_quad(xf, b);
+            match square.zip(checker_id) {
+                Some((sq, id)) => textured_quad(painter, id, q, q.map(|p| checker_uv(p, sq))),
+                None => {
+                    painter.add(egui::Shape::convex_polygon(q.to_vec(), Color32::WHITE, Stroke::NONE));
+                }
+            }
+            continue;
+        }
         let r = under_canvas(xf.doc_rect(b), canvas);
         match square.zip(checker_id) {
             Some((sq, id)) => {
-                let uv = Rect::from_min_max(((r.min - canvas.min) / (2.0 * sq)).to_pos2(), ((r.max - canvas.min) / (2.0 * sq)).to_pos2());
+                let uv = Rect::from_min_max(checker_uv(r.min, sq), checker_uv(r.max, sq));
                 painter.image(id, r, uv, Color32::WHITE);
             }
             None => {
@@ -3325,6 +3340,12 @@ fn draw_beyond_canvas(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &Vie
     for (b, t, tex) in &c.bands {
         let part = |a: i32, o: i32, len: u32| (i64::from(a) - i64::from(o)) as f32 / len.max(1) as f32;
         let (mut u0, mut u1) = (part(b.x0, t.x0, t.width()), part(b.x1, t.x0, t.width()));
+        if turned {
+            // The quad's corners are the band's own (flip included), so no swap.
+            let (v0, v1) = (part(b.y0, t.y0, t.height()), part(b.y1, t.y0, t.height()));
+            textured_quad(painter, tex.id(), doc_quad(xf, *b), [pos2(u0, v0), pos2(u1, v0), pos2(u1, v1), pos2(u0, v1)]);
+            continue;
+        }
         if xf.flip {
             (u0, u1) = (u1, u0);
         }
@@ -3335,6 +3356,26 @@ fn draw_beyond_canvas(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &Vie
         painter.image(tex.id(), e, Rect::from_min_max(at(e.min), at(e.max)), Color32::WHITE);
     }
     !around.is_empty()
+}
+
+/// Document rect `b`'s corners on screen, clockwise from its top-left (a parallelogram in a turned
+/// view).
+fn doc_quad(xf: &ViewXform, b: DRect) -> [Pos2; 4] {
+    [(b.x0, b.y0), (b.x1, b.y0), (b.x1, b.y1), (b.x0, b.y1)].map(|(x, y)| xf.to_screen(x as f32, y as f32))
+}
+
+/// Texture `tex` drawn over the quad `q`, `uv` at its corners.
+fn textured_quad(painter: &egui::Painter, tex: egui::TextureId, q: [Pos2; 4], uv: [Pos2; 4]) {
+    if !q.iter().chain(uv.iter()).all(|p| p.x.is_finite() && p.y.is_finite()) {
+        return;
+    }
+    let mut mesh = egui::Mesh::with_texture(tex);
+    for (pos, uv) in q.into_iter().zip(uv) {
+        mesh.vertices.push(egui::epaint::Vertex { pos, uv, color: Color32::WHITE });
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// Overlays that persist between gestures: polygonal or magnetic lasso in progress, pending crop box.
@@ -4263,8 +4304,8 @@ pub fn commit_crop(app: &mut PhotocraftApp) {
     // Never another document's frame (#1918).
     crate::crop_ui::cancel_stale(app);
     let Some(r) = app.ui.crop_rect.take() else { return };
-    // The view the crop's default mode turned (`crop_mode`) is the user's again.
-    crate::crop_mode::restore(app);
+    // The crop's default mode leaves the view upright (`crop_mode`).
+    crate::crop_mode::upright(app);
     // The untouched default frame around the whole canvas crops nothing (Photoshop's ↵ on it does
     // nothing); one framing the selection's bounds crops to them (#1789).
     if std::mem::take(&mut app.crop.default_frame) {
