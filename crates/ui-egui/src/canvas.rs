@@ -4282,6 +4282,8 @@ pub fn commit_crop(app: &mut PhotocraftApp) {
     if angle != 0.0 {
         p["angle"] = json!(angle);
     }
+    // W x H x Resolution (#2443): resample to that size and set the resolution.
+    crate::crop_size::commit_params(app, &mut p);
     if app.run("image.crop", p).is_ok()
         && let Some(i) = app.session.active_index()
     {

@@ -378,6 +378,10 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if crate::crop_shield::keys(app, ctx) {
         return;
     }
+    // ... and I fills W x H x Resolution from the document (Front Image, #2443).
+    if crate::crop_size::keys(app, ctx) {
+        return;
+    }
     // Single-key tools (no modifiers). D and X (`tools.defaultColors` / `tools.swapColors`) and the
     // brush keys [ ] ⇧[ ⇧] (`tools.decreaseBrushSize`…) are commands, dispatched above with any
     // Keyboard Shortcuts override.

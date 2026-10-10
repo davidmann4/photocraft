@@ -28,7 +28,7 @@ fn pref_unit(u: photocraft_engine::prefs::Unit) -> &'static str {
 }
 
 /// Image Size resampling for Preferences › General › Image Interpolation.
-fn pref_resample(i: photocraft_engine::prefs::Interpolation) -> &'static str {
+pub(crate) fn pref_resample(i: photocraft_engine::prefs::Interpolation) -> &'static str {
     use photocraft_engine::prefs::Interpolation;
     match i {
         Interpolation::Nearest => "nearest",
