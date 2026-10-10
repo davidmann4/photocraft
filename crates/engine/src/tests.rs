@@ -1319,6 +1319,8 @@ fn mask_and_pixels_keep_their_own_colour_pair() {
     assert_eq!(pair(&s), (GREEN, BLUE));
     s.tools.target_mask(true);
     assert_eq!(pair(&s), (mask_fg, black));
+}
+
 #[test]
 fn delete_layer_selects_neighbour_and_undo_restores_layer() {
     for deleted_index in 0..3 {
