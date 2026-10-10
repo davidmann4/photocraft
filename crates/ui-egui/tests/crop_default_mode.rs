@@ -7,7 +7,7 @@
 //! made the box wander instead of moving the image, and a resize with Auto Center Preview didn't
 //! keep the box's centre in place. Tests driving `tool_event` directly never saw that.
 //!
-//! Set `CROP_SHOTS=<dir>` to save frames before, during and after each drag. Skips when no GPU
+//! Skips when no GPU
 //! adapter exists (like `crop_beyond_canvas.rs`).
 
 use egui::{Key, Modifiers, PointerButton, Pos2, pos2, vec2};
