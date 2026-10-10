@@ -1905,7 +1905,10 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         };
         let trash = icons::button(ui, "trash", 26.0, false, tl!(label));
         if trash.clicked() {
-            actions.push((delete.into(), json!({})));
+            // Like Photoshop, ⌥/Alt-click deletes without asking.
+            let confirm = delete == "layer.delete" && !ui.input(|i| i.modifiers.alt);
+            let params = if confirm { json!({"__trash": true}) } else { json!({}) };
+            actions.push((delete.into(), params));
         }
         actions.extend(footer_drop(ui, &trash, footer_drag, "layer.delete"));
         // A click follows the selected thumbnail; name that action for screen readers even
