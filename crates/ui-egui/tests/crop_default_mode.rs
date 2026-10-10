@@ -171,7 +171,9 @@ fn a_resize_keeps_the_box_centre_after_a_space_pan() {
     // On the image the left edge stayed put: the frame grew 96 to the right.
     let r = h.state().ui.crop_rect.expect("frame");
     assert!((r[0] - 0.0).abs() < 0.5 && (r[2] - 396.0).abs() < 0.5, "{r:?}");
-    // On release Auto Center Preview moves the box to the middle.
+    // On release the box stays at the panned position (Photoshop doesn't snap it back to the
+    // middle).
+    shot(&mut h, "resize-released");
     let b = screen_box(&h);
-    assert!(mid(b).distance(c) < 1.0, "centred on release: {:?} vs {c:?}", mid(b));
+    assert!(mid(b).distance(mid(box0)) < 0.5, "still where it was: {:?} vs {:?}", mid(b), mid(box0));
 }

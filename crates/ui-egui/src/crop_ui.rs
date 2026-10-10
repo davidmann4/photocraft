@@ -68,7 +68,7 @@ pub enum CropDrag {
     /// Moving the frame `rect` grabbed at `start`.
     Move { start: [f64; 2], rect: [f64; 4] },
     /// Dragging an edge or corner: `hx`/`hy` are -1 (left/top), 1 (right/bottom) or 0 (untouched).
-    /// `view` is the view at the press when Auto Center Preview keeps the box centred while it
+    /// `view` is the view at the press when Auto Center Preview keeps the box's centre in place while it
     /// is resized (default mode, `crop_mode::live_resize`), else `None`.
     Resize { hx: i8, hy: i8, start: [f64; 2], rect: [f64; 4], view: Option<crate::crop_mode::PressView> },
     /// Turning the frame about `center`: the pointer's direction from it at the press (radians)
@@ -578,11 +578,11 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
                     let view = if crate::crop_mode::live_center(app) { crate::crop_mode::press_view(app) } else { None };
                     CropDrag::Resize { hx, hy, start: p, rect, view }
                 }
-                // Default mode: inside the box the image moves; with Auto Center Preview the box is
-                // centred first. (Inside the untouched frame a drag still draws a new box.)
+                // Default mode: inside the box the image moves, the box staying where it is on
+                // screen (Photoshop doesn't re-centre it). Inside the untouched frame a drag still
+                // draws a new box.
                 Some((rect, Hit::Inside)) if !app.crop.default_frame && image => {
-                    let start = crate::crop_mode::center_for_move(app, p);
-                    CropDrag::MoveImage { start, rect, view: crate::crop_mode::press_view(app) }
+                    CropDrag::MoveImage { start: p, rect, view: crate::crop_mode::press_view(app) }
                 }
                 Some((rect, Hit::Inside)) if !app.crop.default_frame => CropDrag::Move { start: p, rect },
                 Some((rect, Hit::Outside)) if image => {
@@ -616,8 +616,9 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
                 CropDrag::Move { rect, .. } | CropDrag::Resize { rect, view: None, .. } if !ok => app.ui.crop_rect = Some(rect),
                 // A live-centred resize collapsed: the frame and the view it moved go back.
                 CropDrag::Resize { rect, view: Some(view), .. } if !ok => crate::crop_mode::offset_image(app, rect, Some(view), [0.0, 0.0]),
-                // Auto Center Preview: a box drawn or resized in default mode moves to the middle.
-                CropDrag::Draw { .. } | CropDrag::Resize { .. } if ok => {
+                // Auto Center Preview: a box drawn in default mode moves to the middle. (A resized
+                // one stays where its centre was: `crop_mode::live_resize`.)
+                CropDrag::Draw { .. } if ok => {
                     crate::crop_mode::sync_frame(app);
                     crate::crop_mode::auto_center(app);
                 }

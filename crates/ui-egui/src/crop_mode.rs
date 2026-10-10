@@ -5,8 +5,10 @@
 //!   centre (⇧ in 15° steps; the readout beside the pointer is the image's turn, clockwise
 //!   positive), a drag inside moves the image under the box (the box stays put), the arrow keys
 //!   nudge the image, and the handles resize the box on screen as usual. With **Auto Center
-//!   Preview** on (the default), a box being resized stays centred where it was while the handle
-//!   follows the pointer, and a drawn or resized box moves to the middle of the canvas on release.
+//!   Preview** on (the default), a box being resized keeps its centre where it is on screen (also
+//!   after a Space pan) while the handle follows the pointer, a drawn box moves to the middle of
+//!   the canvas on release, and X re-centres it. A drag inside never re-centres the box
+//!   (Photoshop 25.1).
 //! - **Classic Mode** (P toggles it while the Crop tool shows a box): the box moves and turns over
 //!   a fixed image (`crop_ui`). Show Cropped Area and Auto Center Preview are greyed out in it, and
 //!   the area outside the box shows whatever Show Cropped Area says (Photoshop 25.1).
@@ -243,18 +245,6 @@ pub fn offset_image(app: &mut PhotocraftApp, rect: [f64; 4], press: Option<Press
     }
 }
 
-/// A default-mode press inside the box at `p`: with Auto Center Preview the view first pans the
-/// box to the middle of the canvas (it may sit elsewhere after a pan), then `p` is re-read as the
-/// document point now under the pointer, which the move grabs.
-pub fn center_for_move(app: &mut PhotocraftApp, p: [f64; 2]) -> [f64; 2] {
-    let before = press_view(app);
-    auto_center(app);
-    match (before, press_view(app)) {
-        (Some(before), Some(after)) if before != after => remap(p, before, after, app.ui.view.flip_horizontal),
-        _ => p,
-    }
-}
-
 /// A screen vector `s` (points, at the current zoom ignored) as a document vector of the same
 /// length: undoes the view's flip and rotation.
 pub fn screen_to_doc_vec(app: &PhotocraftApp, s: [f64; 2]) -> [f64; 2] {
@@ -366,16 +356,16 @@ mod tests {
         assert!(crate::crop_ui::turning(&app).is_none());
     }
 
-    /// With Auto Center Preview, a press inside an off-centre box (after a pan, say) centres it
-    /// first; the image then follows the pointer from there.
+    /// Even with Auto Center Preview, a drag inside an off-centre box (after a pan, say) leaves the
+    /// box where it is on screen: only the image moves (Photoshop 25.1).
     #[test]
-    fn auto_center_centres_the_box_when_a_move_starts() {
+    fn a_move_never_recentres_the_box() {
         let mut app = app();
+        assert!(app.ui.tool_options.crop_shield.auto_center_preview);
         with_frame(&mut app);
         assert!(mid_of(screen_box(&app)).distance(pos2(370.0, 300.0)) < 0.01);
         screen_drag(&mut app, &[pos2(370.0, 300.0), pos2(380.0, 300.0), pos2(390.0, 300.0)], NONE);
-        assert!(mid_of(screen_box(&app)).distance(pos2(400.0, 300.0)) < 0.01, "{:?}", mid_of(screen_box(&app)));
-        // Grabbed after centring: the image moved 20 with the pointer.
+        assert!(mid_of(screen_box(&app)).distance(pos2(370.0, 300.0)) < 0.01, "{:?}", mid_of(screen_box(&app)));
         let r = app.ui.crop_rect.unwrap();
         assert!(r.iter().zip([20.0, 30.0, 80.0, 70.0]).all(|(a, b)| (a - b).abs() < 1e-3), "{r:?}");
     }
@@ -387,8 +377,6 @@ mod tests {
     #[test]
     fn dragging_inside_moves_the_image_under_the_box() {
         let mut app = app();
-        // The box sits off-centre here: without Auto Center Preview it isn't centred first.
-        app.ui.tool_options.crop_shield.auto_center_preview = false;
         with_frame(&mut app);
         let before = screen_box(&app);
         screen_drag(&mut app, &[pos2(370.0, 300.0), pos2(380.0, 305.0), pos2(390.0, 310.0)], NONE);
@@ -474,7 +462,7 @@ mod tests {
             tool_event(&mut app, ToolEvent::Up { x: m[0], y: m[1] }, NONE);
             let n = screen_box(&app);
             if auto {
-                assert!(mid(n).distance(pos2(400.0, 300.0)) < 0.05, "on release it moves to the middle: {:?}", mid(n));
+                assert!(mid(n).distance(mid(q)) < 0.05, "on release it stays where its centre was: {:?} vs {:?}", mid(n), mid(q));
                 // On the image, the opposite edge stayed put: the frame grew 40 px from it.
                 let r = app.ui.crop_rect.unwrap();
                 assert!(((r[2] - r[0]) - 100.0).abs() < 1e-3 && ((r[3] - r[1]) - 40.0).abs() < 1e-3, "{r:?}");

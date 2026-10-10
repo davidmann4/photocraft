@@ -280,10 +280,10 @@ note = "crop_shield.rs: fill() resolves the shield (canvas.rs paints it around u
 
 [[item]]
 id = "TOOL-214-23"
-target = "Crop: Photoshop's default mode (the image turns and moves behind an upright box, Auto Center Preview keeps a resized box centred and centres a drawn one) and Use Classic Mode (P) in the gear menu"
+target = "Crop: Photoshop's default mode (the image turns and moves behind an upright box, Auto Center Preview keeps a resized box's centre in place and centres a drawn one) and Use Classic Mode (P) in the gear menu"
 status = "done"
 issue = 1919
-note = "crop_mode.rs: the crop model (crop_rect + crop_angle) and image.crop are shared by both modes; default mode sets the view's rotation to -crop_angle while the tool shows a frame (picking the tool turns a Rotate View turn upright, not restored after Enter/Esc, as Photoshop 25.1), pivoting so the box stays put, moves view and frame together for drags inside and arrow keys, keeps a resized box centred live (Auto Center Preview), readout = the image's turn; gear menu order and Classic Mode greying as Photoshop 25.1; CropShield classic_mode / auto_center_preview (ui.set cropShield), P ahead of the Pen key"
+note = "crop_mode.rs: the crop model (crop_rect + crop_angle) and image.crop are shared by both modes; default mode sets the view's rotation to -crop_angle while the tool shows a frame (picking the tool turns a Rotate View turn upright, not restored after Enter/Esc, as Photoshop 25.1), pivoting so the box stays put, moves view and frame together for drags inside and arrow keys, keeps a resized box's centre in place live (Auto Center Preview; a drawn box is centred on release, a moved one never), readout = the image's turn; gear menu order and Classic Mode greying as Photoshop 25.1; CropShield classic_mode / auto_center_preview (ui.set cropShield), P ahead of the Pen key"
 
 [[item]]
 id = "TOOL-1053-1"
