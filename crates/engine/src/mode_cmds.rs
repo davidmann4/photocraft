@@ -63,7 +63,8 @@ pub fn rotated_size(size: Size, deg: f64) -> Size {
 
 pub(crate) fn rotate_arbitrary(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "image.rotation.arbitrary";
-    let angle = f64::from(num(p, "angle", 0.0));
+    // At full precision: an f32 angle can grow the canvas 1 px past what `rotated_size` gives callers.
+    let angle = p.get("angle").and_then(Value::as_f64).unwrap_or(0.0);
     if !angle.is_finite() || angle.abs() > 3600.0 {
         return Err(bad(CMD, "angle out of range"));
     }
