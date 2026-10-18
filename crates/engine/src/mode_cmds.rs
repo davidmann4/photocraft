@@ -77,13 +77,15 @@ pub(crate) fn rotate_arbitrary(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let bg = s.tools.background;
     // Color Sampler points turn with the canvas (the same map the edit applies to the geometry).
+    // They are pixel indices, so map the pixel's centre, as the warp samples the pixels.
     {
         let old = s.active().ok_or(EngineError::NoDocument)?.doc.size;
         let new = rotated_size(old, deg);
         let (sn, cs) = deg.to_radians().sin_cos();
         let (cx, cy) = (f64::from(old.width) / 2.0, f64::from(old.height) / 2.0);
         let (nx, ny) = (f64::from(new.width) / 2.0, f64::from(new.height) / 2.0);
-        s.set_sampler_map(Affine { m: [cs, sn, -sn, cs, nx - (cs * cx - sn * cy), ny - (sn * cx + cs * cy)] });
+        let a = Affine { m: [cs, sn, -sn, cs, nx - (cs * cx - sn * cy), ny - (sn * cx + cs * cy)] };
+        s.set_sampler_map(Affine::translate(0.5, 0.5).then(&a).then(&Affine::translate(-0.5, -0.5)));
     }
     let size = s.edit("Rotate Canvas", |doc, _| {
         let old = doc.size;
