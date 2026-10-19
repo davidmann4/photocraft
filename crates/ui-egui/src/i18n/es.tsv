@@ -2717,6 +2717,22 @@ cameraData	Lens	Objetivo
 	Snap to Origin	Ajustar a origen
 	Search settings…	Buscar ajustes…
 	No matching settings	No hay ajustes que coincidan
+# Edit › Content-Aware Fill workspace
+	Sampling Brush Tool	Herramienta Pincel de muestreo
+	Sampling Area Overlay	Superposición del área de muestreo
+	Show Sampling Area	Mostrar área de muestreo
+	Indicates	Indica
+	Sampling Area	Área de muestreo
+	Excluded Area	Área excluida
+	Sampling Area Options	Opciones del área de muestreo
+	Rectangular	Rectangular
+	Fill Settings	Ajustes de relleno
+	Rotation Adaptation	Adaptación de rotación
+	Very High	Muy alta
+	Full	Completa
+	Mirror	Reflejar
+	Output Settings	Ajustes de salida
+	Output To	Salida a
 	Loading fonts…	Cargando fuentes…
 	Response curve	Curva de respuesta
 	Tool	Herramienta
@@ -4150,6 +4166,7 @@ navigator	Zoom	Zoom
 	There are too many sets: delete one first.	Hay demasiados conjuntos: elimine uno primero.
 	set name	nombre del conjunto
 	{set} (modified)	{set} (modificado)
+	Show file name in title	Mostrar nombre de archivo en el título
 	Accept and Go to Conflict	Aceptar e ir al conflicto
 	Changes undone.	Cambios deshechos.
 	Choose a new shortcut for this command, or leave it without one.	Elija un nuevo método abreviado para este comando o déjelo sin ninguno.
@@ -4172,3 +4189,10 @@ navigator	Zoom	Zoom
 	GPU Memory (MB, 0 = Automatic)	Memoria de GPU (MB, 0 = Automático)
 	{name} was changed by another app after it was opened or saved here.	Otra aplicación cambió {name} después de abrirlo o guardarlo aquí.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Reemplázalo con este documento, o cancela y usa Archivo › Guardar como para conservar ambos.
+	Decrease Brush Size	Reducir tamaño del pincel
+	Increase Brush Size	Aumentar tamaño del pincel
+	Decrease Brush Hardness	Reducir dureza del pincel
+	Increase Brush Hardness	Aumentar dureza del pincel
+	Use	Usar
+	In Front	Delante
+	Behind	Detrás

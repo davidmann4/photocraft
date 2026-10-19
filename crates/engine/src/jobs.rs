@@ -323,6 +323,9 @@ pub fn run<T: Send + 'static>(
 ) -> Result<Value> {
     let authorization = s.authorize.or_else(|| RENDER_AUTHORIZATION.with(std::cell::Cell::get));
     let _authorization = AuthorizationScope::enter(authorization);
+    // The job's document: stored paths it follows are resolved against it on any thread.
+    let document = s.active().and_then(|d| d.path.as_deref()).map(std::path::PathBuf::from);
+    let _document = crate::doc_path::scope(document.as_deref());
     if !s.jobs.spawn || cfg!(target_arch = "wasm32") {
         let t = work(&s.jobs.inline.clone().unwrap_or_default())?;
         return apply(s, t);
@@ -337,8 +340,10 @@ pub fn run<T: Send + 'static>(
     };
     let ctx = JobCtx::new();
     let (tx, rx) = std::sync::mpsc::channel::<Result<Payload>>();
+    let apply_document = document.clone();
     let erased: Apply = Box::new(move |s, any| {
         let _authorization = AuthorizationScope::enter(authorization);
+        let _document = crate::doc_path::scope(apply_document.as_deref());
         let t = any.downcast::<T>().map_err(|_| EngineError::Other("internal error: job result type mismatch".into()))?;
         apply(s, *t)
     });
@@ -352,6 +357,7 @@ pub fn run<T: Send + 'static>(
         // no way to get it back, so the error is reported instead.
         let spawned = std::thread::Builder::new().name(format!("photocraft-job-{}", id.0)).spawn(move || {
             let _authorization = AuthorizationScope::enter(authorization);
+            let _document = crate::doc_path::scope(document.as_deref());
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&wctx).map(|t| Box::new(t) as Payload)))
                 .unwrap_or_else(|_| Err(EngineError::Other(format!("`{label_w}` failed with an internal error (logged); the document is unchanged"))));
             // The receiver is gone when the job was cancelled: nothing to report.
@@ -503,7 +509,9 @@ impl Session {
                 warm_layer_bounds(&imported.document, || ctx.check())?;
                 Ok(imported)
             },
-            move |s, r: photocraft_io::ImportResult| {
+            move |s, mut r: photocraft_io::ImportResult| {
+                // File Handling's ACEScg option, before the colour prompt looks at the profile.
+                crate::file_cmds::tag_exr_colorspace(s, &name_a, &mut r.document);
                 // Ask When Opening: held back until the prompt is answered (`take_held_open`). A
                 // developed raw has no embedded profile to ask about.
                 let raw = r.warnings.iter().any(|w| w.contains(photocraft_io::raw::DEVELOPED_NOTE));
@@ -694,6 +702,7 @@ impl Session {
             gate(id, &params)?;
         }
         let _authorization = AuthorizationScope::enter(self.authorize);
+        let _document = crate::doc_path::scope(self.active().and_then(|d| d.path.as_deref()).map(std::path::Path::new));
         // Last Filter runs as the filter it repeats: journaled, recorded in an action, faded and
         // run as a job like that filter, so a recorded step replays the same filter anywhere
         // (#3089), as Transform Again records its transform (#1440). With no filter yet it falls
@@ -723,6 +732,7 @@ impl Session {
         // action it plays (a script step) must not flush the steps it ran so far into the action
         // being recorded, nor move the recording mark past the entries it is about to replace.
         let recording = if spec.journal && crate::actions_cmds::replayable(id) { self.actions.recording.take() } else { None };
+        let before = self.active().map(|st| st.doc.clone());
         // Last-resort guard (AGENTS.md, Never crash): a command that panics anyway fails with an
         // error instead of taking the app down. `edit` only commits a document after its closure
         // returns, so the documents are unchanged.
@@ -750,9 +760,25 @@ impl Session {
                 Ok(Started::Job(jid))
             }
             (Ok(v), None) => {
+                if let Some(before) = before {
+                    self.add_relayout_damage(&before);
+                }
                 self.after_command(id, params, spec.journal, Some(nested_from));
                 Ok(Started::Done(v))
             }
+        }
+    }
+
+    /// Grows the damage a command reported for the pixels it changed by what effects laid out
+    /// over a layer's frame repaint when it moved ([`photocraft_compose::relayout_damage`]): a
+    /// stroke on a layer with a Gradient Overlay reports the stroke, but the gradient is laid out
+    /// again over the whole grown layer (#4053). `before` is the active document before.
+    fn add_relayout_damage(&mut self, before: &Arc<Document>) {
+        let Some(st) = self.active_mut().filter(|st| st.doc.id == before.id && !Arc::ptr_eq(&st.doc, before)) else { return };
+        let Some(d) = st.last_damage.filter(|d| !d.is_empty()) else { return };
+        let extra = photocraft_compose::relayout_damage(before, &st.doc);
+        if !extra.is_empty() {
+            st.last_damage = Some(d.union(&extra));
         }
     }
 
