@@ -881,9 +881,16 @@ macro_rules! ev {
                 Some(m) => step($id, Value::Object(m)),
                 None => Mapped::Unsupported { harmless: false },
             },
-            to: |_, p| fields_to(p, $fields, desc("null")),
+            to: |_, p| if pixel_target(p) { fields_to(p, $fields, desc("null")) } else { None },
         }
     };
+}
+
+/// Whether `p` edits the layer's pixels: no `"target"` or `"target":"pixels"`. Photoshop's
+/// descriptor for a plain event has no field for a mask, Quick Mask or channel target, so such
+/// a step can't be exported faithfully.
+fn pixel_target(p: &Value) -> bool {
+    p.get("target").is_none_or(|t| t.as_str() == Some("pixels"))
 }
 
 const INTERPOLATION: &[(&str, &str)] = &[
@@ -2368,6 +2375,52 @@ fn image_size_from(d: &Descriptor) -> Mapped {
     step("image.imageSize", Value::Object(p))
 }
 
+/// Shadows/Highlights (`adaptCorrect`, #5830): the shadow and highlight tones are `shadowMode`
+/// and `highlightMode` objects (amount and width in %, radius in px), then the black and white
+/// clips (%), midtone contrast (`center`) and colour correction. Each key is read as its char ID
+/// or its string ID, whichever the file used; absent keys keep the command's defaults.
+const SHADOWS_HIGHLIGHTS_TONES: [(&str, &str, &str); 2] = [("sdwM", "shadowMode", "shadow"), ("hglM", "highlightMode", "highlight")];
+const SHADOWS_HIGHLIGHTS_TONE: [(&str, &str, &str); 3] = [("Amnt", "amount", "Amount"), ("Wdth", "width", "Tone"), ("Rds ", "radius", "Radius")];
+const SHADOWS_HIGHLIGHTS: [(&str, &str, &str); 4] =
+    [("BlcC", "blackClip", "blackClip"), ("WhtC", "whiteClip", "whiteClip"), ("Cntr", "center", "midtone"), ("ClrC", "colorCorrection", "color")];
+
+fn shadows_highlights_from(d: &Descriptor) -> Mapped {
+    let mut m = Map::new();
+    for (code, name, prefix) in SHADOWS_HIGHLIGHTS_TONES {
+        let Some(t) = get_obj(d, code).or_else(|| get_obj(d, name)) else { continue };
+        for (code, name, suffix) in SHADOWS_HIGHLIGHTS_TONE {
+            if let Some(v) = get_num(t, code).or_else(|| get_num(t, name)) {
+                m.insert(format!("{prefix}{suffix}"), Value::from(v));
+            }
+        }
+    }
+    for (code, name, param) in SHADOWS_HIGHLIGHTS {
+        if let Some(v) = get_num(d, code).or_else(|| get_num(d, name)) {
+            m.insert(param.into(), Value::from(v));
+        }
+    }
+    step("image.adjustments.shadowsHighlights", Value::Object(m))
+}
+
+fn shadows_highlights_to(_: &str, p: &Value) -> Option<Descriptor> {
+    let mut d = desc("null");
+    for (_, name, prefix) in SHADOWS_HIGHLIGHTS_TONES {
+        let mut t = desc("adaptCorrectTones");
+        for (_, key, suffix) in SHADOWS_HIGHLIGHTS_TONE {
+            if let Some(v) = jnum(p, &format!("{prefix}{suffix}")) {
+                t = t.with(key, if suffix == "Radius" { long(v) } else { pct(v) });
+            }
+        }
+        d = d.with(name, D::Descriptor(t));
+    }
+    for (_, key, param) in SHADOWS_HIGHLIGHTS {
+        if let Some(v) = jnum(p, param) {
+            d = d.with(key, if matches!(param, "midtone" | "color") { long(v) } else { D::Double(v) });
+        }
+    }
+    Some(d)
+}
+
 fn image_size_to(_: &str, p: &Value) -> Option<Descriptor> {
     let mut d = desc("null");
     if let Some(pc) = jnum(p, "percent") {
@@ -2657,6 +2710,14 @@ const EVENTS: &[Event] = &[
     ev!("Crst", "crystallize", "Crystallize", "filter.pixelate.crystallize", &[F("ClSz", "cellSize", Kind::Long)]),
     Event { code: "GEfc", name: "filterGallery", label: "Filter Gallery", ids: GALLERY_IDS, from: gallery_from, to: gallery_to },
     // Adjustments (Image › Adjustments).
+    Event {
+        code: "",
+        name: "adaptCorrect",
+        label: "Shadows/Highlights",
+        ids: &["image.adjustments.shadowsHighlights"],
+        from: shadows_highlights_from,
+        to: shadows_highlights_to,
+    },
     Event {
         code: "Lvls",
         name: "levels",
@@ -3223,6 +3284,7 @@ fn load(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn save(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "actions.save";
+    crate::actions_cmds::flush_recording(s)?;
     let skip = match p.get("skipUnsupported") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,

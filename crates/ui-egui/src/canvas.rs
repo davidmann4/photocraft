@@ -516,12 +516,22 @@ pub(crate) struct CommittedStroke {
     pub(crate) revision: u64,
     key: u64,
     damage: Vec<DRect>,
+    /// What the commit repaints beyond the stroke whatever a cache showed: the layer's whole
+    /// composite when effects laid out over its frame moved with it (a Gradient Overlay spans the
+    /// grown layer, #4053; `photocraft_compose::relayout_damage`).
+    relayout: DRect,
 }
 
 impl CommittedStroke {
     #[cfg(test)]
     pub(crate) fn for_test(key: u64, damage: Vec<DRect>) -> Self {
-        Self { doc: photocraft_doc::DocId(0), revision: 0, key, damage }
+        Self { doc: photocraft_doc::DocId(0), revision: 0, key, damage, relayout: DRect::EMPTY }
+    }
+
+    /// The raw preview key of the live stroke's last step: what a cache showed at release.
+    #[cfg(test)]
+    pub(crate) fn last_key(&self) -> u64 {
+        self.key + self.damage.len() as u64
     }
 
     /// What a cache that showed raw preview `key` of this stroke at the revision before misses.
@@ -1472,6 +1482,13 @@ pub(crate) fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), no
         && let Some(c) = app.committed_stroke.as_ref().filter(|c| c.doc == st.doc.id && c.revision == now.0)
         && let Some(r) = c.since(seen.1 ^ display_key)
     {
+        let r = if c.relayout.is_empty() {
+            r
+        } else if r.is_empty() {
+            c.relayout
+        } else {
+            r.union(&c.relayout)
+        };
         return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
     if seen.1 == now.1 ^ display_key && seen.0 + 1 == now.0 {
@@ -1882,12 +1899,13 @@ pub(crate) fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &e
     }
     // Web and explicitly inline sessions keep the deterministic synchronous path (#1676):
     // computed inline, uploaded when a GPU texture exists, still inspectable without one.
+    // Flattened once, as the background worker does; `publish_filter_preview` uploads it (#7490).
     let _ = ctx;
     if app.filter_preview.as_ref().is_none_or(|p| p.key != request) {
         let doc = app.session.documents().get(idx)?.doc.clone();
         let documents: Vec<_> = app.session.documents().iter().map(|d| d.doc.clone()).collect();
         let t0 = crate::gpu_canvas::now_ms();
-        let result = crate::filter_dialog::preview_document_for_target(
+        let computed = crate::filter_dialog::preview_document_for_target(
             &doc,
             request.active,
             &request.command,
@@ -1898,19 +1916,11 @@ pub(crate) fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &e
             &documents,
             &app.session.color.settings,
         )
-        .map(std::sync::Arc::new);
-        if let Some(r) = &result {
-            let buf = photocraft_compose::flatten(r);
-            let t1 = crate::gpu_canvas::now_ms();
-            // The preview's own profile: Assign and Convert to Profile change it (see `publish_filter_preview`).
-            let (display, _) = canvas_display(app, r, None);
-            if let Some(gpu) = app.gpu.as_ref() {
-                gpu.upload_buffer_full(key, &texture_buffer(display.as_deref(), &buf), doc.depth);
-            }
-            app.perf.record("filter-preview", r.size.area(), t1 - t0, crate::gpu_canvas::now_ms() - t1);
-        }
-        let buffer = result.as_ref().map(|r| photocraft_compose::flatten(r));
-        publish_filter_preview(app, idx, request, result.zip(buffer), crate::gpu_canvas::now_ms() - t0);
+        .map(|doc| {
+            let buffer = photocraft_compose::flatten(&doc);
+            (std::sync::Arc::new(doc), buffer)
+        });
+        publish_filter_preview(app, idx, request, computed, crate::gpu_canvas::now_ms() - t0);
     }
     let preview = app.filter_preview.as_ref()?;
     let result = preview.result.as_ref()?;
@@ -3334,6 +3344,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     let over_bars = ctx.data(|d| d.get_temp::<bool>(bars_id)).unwrap_or(false);
     let nav_hovered = response.hovered() || free_hover || over_bars;
     // Interface › Enable Animations off: the wheel moves the canvas without a glide (#5721).
+    // Enhanced Controls › Enable Gestures off: two fingers on a touch screen neither zoom nor
+    // turn the view (#204); the mouse and trackpad are unaffected.
+    let touch_gestures = app.session.prefs().enhanced_controls.touch_gestures;
     let wheel = crate::wheel_nav::read_with(
         &ctx,
         app.session.prefs().general.zoom_with_scroll_wheel,
@@ -3341,6 +3354,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         response.id.with("wheel"),
         nav_hovered,
         app.session.prefs().interface.enable_animations,
+        touch_gestures,
     );
     if nav_hovered {
         let pointer = ui.input(|i| i.pointer.hover_pos());
@@ -3373,7 +3387,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             _ => {}
         }
         let rotate_trackpad = app.session.prefs().enhanced_controls.rotate_view_with_trackpad;
-        if let Some(delta) = crate::rotate_view::trackpad_delta(&ctx, rotate_trackpad) {
+        if let Some(delta) = crate::rotate_view::trackpad_delta(&ctx, rotate_trackpad, touch_gestures) {
             let next = view.rotation + crate::rotate_view::screen_delta(delta, xf.flip);
             if next.is_finite() {
                 view.rotation = crate::rotate_view::wrap_deg(next);
@@ -3445,7 +3459,21 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         // Layer Style on a Drop or Inner Shadow page: a drag on the image moves the shadow (#5701).
         let shadow_drag =
             !picking && app.ui.dialogs.last().is_some_and(|d| d.kind == crate::state::DialogKind::LayerStyle && crate::layer_style::drags_shadow(&d.fields));
-        let hand = app.ui.tool == Tool::Hand && !picking && !range_picking && !refine_brushing && !pinning && !shadow_drag;
+        // ⌘/Ctrl-click with Curves open: a point at the pixel's tone (#7325), whatever the tool. The
+        // press's own modifiers decide, and only the press adds: a drag would add one per frame.
+        let curve_point_press = (primary && !middle && crate::adjust_dialog::curves_on_top(app))
+            .then(|| {
+                ctx.input(|i| {
+                    i.events.iter().rev().find_map(|e| match e {
+                        egui::Event::PointerButton { button: PointerButton::Primary, pressed: true, modifiers, .. } => Some(*modifiers),
+                        _ => None,
+                    })
+                })
+            })
+            .flatten()
+            .map(|m| crate::workspace_ui::sticky_mods(app, m))
+            .filter(|m| m.command);
+        let hand = app.ui.tool == Tool::Hand && !picking && !range_picking && !refine_brushing && !pinning && !shadow_drag && curve_point_press.is_none();
         if let Some(d) = crate::dialogs::pan_delta(&ctx, rect, hand) {
             let d = xf.unmap_vec(d) / (view.zoom / ppp);
             view.center[0] -= d.x;
@@ -3490,6 +3518,11 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         {
             let press = crate::dialogs::free_press(&ctx, rect).map(|q| xf.to_doc(q));
             crate::select_mask_view::canvas_brush(app, &painter, p, press, xf.zoom_x());
+        } else if let Some(mods) = curve_point_press
+            && let Some(p) = crate::dialogs::free_press(&ctx, rect)
+        {
+            let d = xf.to_doc(p);
+            crate::adjust_dialog::add_point_at(app, &ctx, d[0], d[1], mods.shift);
         } else if primary
             && !middle
             && let Some(p) = crate::dialogs::free_pointer_over(&ctx, rect).filter(|p| img_rect.contains(*p))
@@ -4429,7 +4462,7 @@ pub(crate) fn marching_ants_lines(painter: &egui::Painter, lines: impl Iterator<
     };
     for (pa, pb) in lines {
         // A transformed outline can land anywhere, or nowhere (a point on a Distort's horizon).
-        if !(pa.is_finite() && pb.is_finite()) || !clip.intersects(Rect::from_two_pos(pa, pb).expand(1.0)) {
+        if !(pa.is_finite() && pb.is_finite() && clip.intersects(Rect::from_two_pos(pa, pb).expand(1.0))) {
             continue;
         }
         let (pa, pb) = if pa.distance(pb) > LONG {
@@ -5829,6 +5862,7 @@ fn commit_brush_stroke(app: &mut PhotocraftApp, d: &Drag) {
         }
     }
     let LiveStroke { stroke, doc, key, damage, .. } = l;
+    let before = app.session.documents().iter().find(|st| st.doc.id == doc).map(|st| st.doc.clone());
     if let EngineStroke::Brush(stroke) = stroke
         && app.session.offer_live_stroke(*stroke).is_err()
     {
@@ -5839,14 +5873,15 @@ fn commit_brush_stroke(app: &mut PhotocraftApp, d: &Drag) {
     app.stroke_trace.stroke(crate::gpu_canvas::now_ms() - started);
     app.session.clear_live_stroke();
     let Ok(r) = result else { return };
-    let revision = app.session.documents().iter().find(|st| st.doc.id == doc).map(|st| st.revision);
+    let after = app.session.documents().iter().find(|st| st.doc.id == doc).map(|st| (st.revision, st.doc.clone()));
     if r.get("fromLive").and_then(serde_json::Value::as_bool) == Some(true)
-        && let Some(revision) = revision
+        && let Some((revision, after)) = after
     {
-        app.committed_stroke = Some(CommittedStroke { doc, revision, key, damage });
+        let relayout = before.map_or(DRect::EMPTY, |b| photocraft_compose::relayout_damage(&b, &after));
+        app.committed_stroke = Some(CommittedStroke { doc, revision, key, damage, relayout });
     } else {
         // Rendered again from scratch: the commit's damage rect refreshes the stroke.
-        let shown = CommittedStroke { doc, revision: 0, key, damage };
+        let shown = CommittedStroke { doc, revision: 0, key, damage, relayout: DRect::EMPTY };
         // Raw preview key 0 = the document itself (its colour display folded in).
         shown_as_document(app, doc, |k| shown.since(k).is_some());
     }
@@ -6204,6 +6239,26 @@ mod tests {
         let d = color.canvas_display(&doc).unwrap();
         assert!(!d.is_identity());
         assert_eq!(super::display_image(Some(&d), &buf).pixels, reference(d.to_rgba8(&buf)).pixels);
+    }
+
+    /// #7490: the inline (web) preview path composites and uploads each changed preview once, as
+    /// the background worker does. It used to flatten and upload it twice and record it twice,
+    /// so the frame's refresh time counted the preview twice.
+    #[test]
+    fn inline_filter_preview_is_composited_and_recorded_once() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.background_jobs = false;
+        app.run("file.new", json!({"width": 320, "height": 240})).unwrap();
+        crate::filter_dialog::open(&mut app, "filter.stylize.solarize").unwrap();
+        app.perf.frame_refresh_ms = 0.0;
+        let (_, _, size) = ensure_filter_preview(&mut app, 0, &egui::Context::default()).expect("a preview");
+        assert_eq!(size, [320, 240]);
+        assert_eq!(app.perf.last_refresh, "filter-preview");
+        assert_eq!(app.perf.last_refresh_px, 320 * 240);
+        assert_eq!(app.perf.frame_refresh_ms, app.perf.composite_ms + app.perf.upload_ms, "one record per preview");
+        // Unchanged request: nothing is recomputed or recorded again.
+        ensure_filter_preview(&mut app, 0, &egui::Context::default()).expect("the same preview");
+        assert_eq!(app.perf.frame_refresh_ms, app.perf.composite_ms + app.perf.upload_ms);
     }
 
     /// #6326: a filter's live preview is never coarser than the screen. On a document big enough

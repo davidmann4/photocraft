@@ -187,6 +187,10 @@ fn every_mapped_command_exports_and_imports_back() {
             json!({"colorize": false, "hue": 10, "saturation": -20, "lightness": 0, "reds": {"hue": 5, "saturation": 0, "lightness": 0, "range": [315, 345, 15, 45]}}),
         ),
         ("image.adjustments.brightnessContrast", json!({"brightness": 10, "contrast": -5, "legacy": false})),
+        (
+            "image.adjustments.shadowsHighlights",
+            json!({"shadowAmount": 60, "shadowTone": 40, "shadowRadius": 25, "highlightAmount": 10, "highlightTone": 50, "highlightRadius": 30, "blackClip": 0.02, "whiteClip": 0.05, "midtone": 15, "color": 20}),
+        ),
         ("image.adjustments.threshold", json!({"level": 100})),
         ("image.adjustments.posterize", json!({"levels": 4})),
         ("image.adjustments.invert", json!({})),
@@ -1100,6 +1104,65 @@ fn smart_blur_quality_uses_photoshop_codes() {
     }
 }
 
+/// #5830: Shadows/Highlights (`adaptCorrect`) recorded by Photoshop, with string IDs, plays as
+/// Image › Adjustments › Shadows/Highlights instead of stopping as a step with no equivalent.
+#[test]
+fn photoshop_shadows_highlights_steps_play() {
+    let tones = |amount: f64, width: f64, radius: i32| {
+        D::Descriptor(desc("adaptCorrectTones").with("amount", pct(amount)).with("width", pct(width)).with("radius", D::Integer(radius)))
+    };
+    let d = desc("null")
+        .with("shadowMode", tones(35.0, 50.0, 30))
+        .with("highlightMode", tones(20.0, 40.0, 24))
+        .with("blackClip", D::Double(0.01))
+        .with("whiteClip", D::Double(0.02))
+        .with("center", D::Integer(5))
+        .with("colorCorrection", D::Integer(20));
+    let e = event_for(&item("adaptCorrect", "Sombra/Realce", None).event).expect("adaptCorrect is mapped");
+    let Mapped::Steps(steps) = (e.from)(&d) else { panic!("Shadows/Highlights maps to a step") };
+    assert_eq!(steps.len(), 1);
+    let (id, p) = &steps[0];
+    assert_eq!(id, "image.adjustments.shadowsHighlights");
+    let mut p = p.clone();
+    normalise(&mut p);
+    assert_eq!(
+        p,
+        json!({"shadowAmount": 35, "shadowTone": 50, "shadowRadius": 30, "highlightAmount": 20, "highlightTone": 40, "highlightRadius": 24, "blackClip": 0.01, "whiteClip": 0.02, "midtone": 5, "color": 20})
+    );
+    // The same settings as char IDs read the same; absent keys are left to the defaults.
+    let codes = desc("null")
+        .with("sdwM", D::Descriptor(desc("adaptCorrectTones").with("Amnt", pct(35.0)).with("Wdth", pct(50.0)).with("Rds ", D::Integer(30))))
+        .with("BlcC", D::Double(0.01));
+    let Mapped::Steps(steps) = (e.from)(&codes) else { panic!("char IDs map too") };
+    let mut q = steps[0].1.clone();
+    normalise(&mut q);
+    assert_eq!(q, json!({"shadowAmount": 35, "shadowTone": 50, "shadowRadius": 30, "blackClip": 0.01}));
+    // And it runs on a document.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 16, "height": 16, "background": "#404040"})).unwrap();
+    s.execute(id, p).unwrap();
+}
+
+#[test]
+fn save_while_recording_includes_pending_steps() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    s.execute("actions.record", json!({"name": "Pending"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Recorded"})).unwrap();
+
+    // While still recording (without calling actions.stop), save the action.
+    let saved = s.execute("actions.save", json!({"action": "Pending"})).unwrap();
+    assert_eq!(saved["steps"], 1, "pending steps must be flushed and included in save");
+    assert_eq!(saved["skipped"], json!([]));
+
+    // After save, recording continues and additional steps are flushed on stop without duplication.
+    s.execute("layer.new.layer", json!({"name": "Second"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+
+    let action = s.execute("actions.get", json!({"action": "Pending"})).unwrap();
+    assert_eq!(action["steps"].as_array().unwrap().len(), 2, "both steps must be present without duplication");
+}
+
 /// Photoshop's Close has no document target: a Close of a specific document must not be
 /// exported as a plain Close, which would close the active document on playback.
 #[test]
@@ -1134,4 +1197,25 @@ fn fractional_translation_only_transform_keeps_offset_and_interpolation() {
     assert_eq!(steps[0].0, "edit.transform");
     assert_eq!(steps[0].1.get("dx").and_then(Value::as_f64), Some(0.5));
     assert_eq!(steps[0].1.get("interpolation"), Some(&json!("bilinear")));
+}
+
+/// A filter recorded against a layer mask must not export as a plain filter that edits the
+/// layer's pixels on replay: Photoshop's descriptor has no field for PhotoCraft's `target`.
+#[test]
+fn add_noise_with_mask_target_is_not_exported_as_pixel_filter() {
+    let masked = Action {
+        name: "Probe".into(),
+        steps: vec![("filter.noise.addNoise".into(), json!({"amount": 75, "seed": 123, "target": "mask"}))],
+        ..Default::default()
+    };
+    assert!(export("Audit", &[&masked], &[], false).is_err());
+    let (_, skipped) = export("Audit", &[&masked], &[], true).unwrap();
+    assert_eq!(skipped, vec![Skipped { action: "Probe".into(), step: 0, id: "filter.noise.addNoise".into() }]);
+    for params in [json!({"amount": 75, "seed": 123}), json!({"amount": 75, "seed": 123, "target": "pixels"})] {
+        let plain = Action { name: "Plain".into(), steps: vec![("filter.noise.addNoise".into(), params)], ..Default::default() };
+        let (bytes, skipped) = export("Audit", &[&plain], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        let imported = import(&bytes).unwrap();
+        assert_eq!(imported.actions[0].steps, vec![("filter.noise.addNoise".to_string(), json!({"amount": 75, "seed": 123}))]);
+    }
 }
