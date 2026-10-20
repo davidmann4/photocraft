@@ -39,6 +39,7 @@ mod pattern_fill_psd;
 mod pcraft_manifest_name;
 mod pdn_corpus;
 mod png_text_metadata;
+mod psd16_merged_transparency;
 mod psd32_export;
 mod psd_background;
 mod psd_block_alignment;

@@ -5,7 +5,7 @@
 //! Photoshop's 16-bit PSB in the report has four channels, a positive layer count in `Lr16`, no
 //! `Mt16` block, and one alpha channel name, "Transparency". Re-saving it wrote five channels.
 
-mod common;
+use crate::common;
 
 use common::raster;
 use photocraft_color::{ColorMode, SampleType};
