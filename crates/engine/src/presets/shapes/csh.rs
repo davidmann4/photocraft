@@ -55,7 +55,9 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
                     return Err(bad(CMD, format!("shape {:?} has no path", shape.name)));
                 }
                 let path = fit(&path, [0.0, 0.0, 100.0, 100.0], true);
-                let name = if shape.name.trim().is_empty() { "Shape".to_owned() } else { shape.name };
+                // Photoshop's own sets store localisation keys (`$$$/Presets/Shapes/Tiger=Tiger`).
+                let name = photocraft_doc::pattern::display_name(&shape.name).trim();
+                let name = if name.is_empty() { "Shape".to_owned() } else { name.to_owned() };
                 items.push(ShapePreset { name, path });
             }
             let group = group.unwrap_or_else(|| if stem.is_empty() { "Imported Shapes".into() } else { stem });
@@ -66,12 +68,20 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
             let mut taken: HashSet<String> = s.presets.shapes.iter().flat_map(|g| g.items.iter().map(|i| i.name.clone())).collect();
             taken.extend(s.edit_state.custom_shapes.iter().map(|c| c.name.clone()));
             let mut suffixes: HashMap<String, usize> = HashMap::new();
+            // A renamed duplicate never takes a name another shape of the set has (Photoshop's
+            // Legacy Shapes holds two "Butterfly" and a "Butterfly 2").
+            let own: HashSet<String> = items.iter().map(|i| i.name.clone()).collect();
             for item in &mut items {
                 let base = item.name.clone();
                 let suffix = suffixes.entry(base.clone()).or_insert(2);
                 while !taken.insert(item.name.clone()) {
-                    item.name = format!("{base} {suffix}");
-                    *suffix += 1;
+                    loop {
+                        item.name = format!("{base} {suffix}");
+                        *suffix += 1;
+                        if !own.contains(&item.name) {
+                            break;
+                        }
+                    }
                 }
             }
             let names: Vec<String> = items.iter().map(|i| i.name.clone()).collect();

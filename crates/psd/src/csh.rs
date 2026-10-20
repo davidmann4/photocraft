@@ -88,10 +88,23 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<CshShape>> {
         validate_path(&path)?;
         shapes.push(CshShape { name, id, bounds, path });
     }
-    if !r.is_empty() {
-        return Err(PsdError::invalid("CSH trailing data"));
-    }
+    skip_tagged_blocks(&mut r)?;
     Ok(shapes)
+}
+
+/// Photoshop's own sets end with tagged blocks after the last shape (`8BIM` `phry`: the Shapes
+/// panel's groups). They don't change any shape, so they are skipped; anything else is an error.
+fn skip_tagged_blocks(r: &mut Reader) -> Result<()> {
+    while !r.is_empty() {
+        let signature = r.array()?;
+        if &signature != b"8BIM" {
+            return Err(PsdError::invalid("CSH trailing data"));
+        }
+        let _key: [u8; 4] = r.array()?;
+        let length = r.u32()?;
+        r.bytes_u64(u64::from(length))?;
+    }
+    Ok(())
 }
 
 fn zero_padding(bytes: &[u8]) -> Result<()> {

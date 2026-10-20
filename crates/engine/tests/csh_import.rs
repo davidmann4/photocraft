@@ -6,7 +6,7 @@ use serde_json::json;
 
 #[path = "../../psd/tests/common/csh_fixture.rs"]
 mod fixture;
-use fixture::{polygon_csh, triangle_csh};
+use fixture::{named_polygon_csh, polygon_csh, triangle_csh, with_phry_trailer};
 
 #[test]
 fn csh_import_makes_an_original_shape_available_without_a_document() {
@@ -115,4 +115,29 @@ fn csh_same_winding_inner_subpath_stays_a_hole_after_place_and_reload() {
     assert!(image.px[4 * 96 + 4][3] < 0.01, "outside shape must remain transparent");
     s.execute("edit.undo", json!({})).unwrap();
     assert!(photocraft_compose::flatten(&s.active().unwrap().doc).px.iter().all(|pixel| pixel[3] < 0.01));
+}
+
+#[test]
+fn csh_photoshop_set_with_groups_trailer_and_localised_names_imports() {
+    // As Photoshop writes its own sets: a `$$$/…=Name` key per shape and an `8BIM` `phry` trailer.
+    let bytes = with_phry_trailer(named_polygon_csh("$$$/Presets/Shapes/Tiger=Tiger", &[&[(0.25, 0.25), (0.75, 0.25), (0.5, 0.75)]]));
+    let mut s = Session::new();
+    let result = s.execute("shape.presets.importCsh", json!({"data": photocraft_paint::tile::b64_encode(&bytes), "group": "Imported Animals"})).unwrap();
+    assert_eq!(result["names"], json!(["Tiger"]));
+    s.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
+    s.execute("shape.presets.place", json!({"preset": "Tiger", "group": result["group"]})).unwrap();
+}
+
+#[test]
+fn csh_renamed_duplicate_does_not_take_a_name_from_the_same_set() {
+    // Photoshop's Legacy Shapes has "Butterfly" twice and a "Butterfly 2": each keeps its own.
+    let shape = |name| named_polygon_csh(name, &[&[(0.25, 0.25), (0.75, 0.25), (0.5, 0.75)]]);
+    let mut set = shape("Wing");
+    set[8..12].copy_from_slice(&3u32.to_be_bytes());
+    for name in ["Wing", "Wing 2"] {
+        set.extend_from_slice(&shape(name)[12..]);
+    }
+    let mut s = Session::new();
+    let result = s.execute("shape.presets.importCsh", json!({"data": photocraft_paint::tile::b64_encode(&set)})).unwrap();
+    assert_eq!(result["names"], json!(["Wing", "Wing 3", "Wing 2"]));
 }

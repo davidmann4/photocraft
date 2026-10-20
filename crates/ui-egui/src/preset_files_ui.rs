@@ -134,7 +134,10 @@ pub fn open(app: &mut PhotocraftApp, name: &str, bytes: &[u8]) -> Option<Result<
             "shapes" => ("Imported {n} shape from {file}", "Imported {n} shapes from {file}"),
             _ => ("Imported {n} gradient from {file}", "Imported {n} gradients from {file}"),
         };
-        let imported = crate::i18n::fmt(&crate::i18n::trn(crate::i18n::current(), n, one, other), &[("file", &stem)]);
+        // Name the group the presets landed in: a `.csh` set never replaces one, so a second
+        // import of `Set.csh` goes to a new, uniquely named group (the background path does the same).
+        let group = r.get("group").and_then(Value::as_str).unwrap_or(&stem);
+        let imported = crate::i18n::fmt(&crate::i18n::trn(crate::i18n::current(), n, one, other), &[("file", group)]);
         app.ui.status = match warnings.first() {
             Some(warning) => {
                 let template = "{message} (notes: {n}; {warning})";
@@ -184,6 +187,16 @@ mod tests {
         let imported = app.session.presets.shapes.iter().find(|g| g.name == "Original").unwrap();
         assert_eq!(imported.items.len(), 1);
         assert_eq!(imported.items[0].name, "Triangle");
+    }
+
+    #[test]
+    fn csh_open_twice_reports_the_group_the_shapes_went_to() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        open(&mut app, "Original.csh", &csh_fixture::triangle_csh()).unwrap().unwrap();
+        open(&mut app, "Original.csh", &csh_fixture::triangle_csh()).unwrap().unwrap();
+        let second = &app.session.presets.shapes.last().unwrap().name;
+        assert_ne!(second, "Original");
+        assert!(app.ui.status.ends_with(&format!("from {second}")), "{}", app.ui.status);
     }
 
     #[test]

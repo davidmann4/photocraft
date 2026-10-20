@@ -86,3 +86,19 @@ fn rejects_missing_knots_and_mismatched_open_closed_records() {
     mismatched[length_record..length_record + 2].copy_from_slice(&0u16.to_be_bytes());
     assert!(csh::parse(&mismatched).is_err());
 }
+
+#[test]
+fn skips_photoshop_tagged_blocks_after_the_last_shape() {
+    // Photoshop's own sets end with `8BIM` `phry` (the Shapes panel's groups) after the shapes.
+    let mut bytes = fixture(&["A"]);
+    bytes.extend_from_slice(b"8BIMphry");
+    bytes.extend_from_slice(&3u32.to_be_bytes());
+    bytes.extend_from_slice(&[0, 0, 16]);
+    assert_eq!(csh::parse(&bytes).unwrap().len(), 1);
+    for end in fixture(&["A"]).len() + 1..bytes.len() {
+        assert!(csh::parse(&bytes[..end]).is_err(), "accepted a truncated trailer at {end}");
+    }
+    let mut other = bytes.clone();
+    other[fixture(&["A"]).len()..][..4].copy_from_slice(b"8B64");
+    assert!(csh::parse(&other).is_err());
+}

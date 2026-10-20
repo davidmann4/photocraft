@@ -233,7 +233,7 @@ what an agent can't finish alone.
   Raw; layered TIFF extra alpha channels (FILE-215-7); spot plates (FILE-215-17); .asl,
   .shc presets and .csh export (FILE-215-15); C2PA (#1050).
 - **CSH import:** Version 2 custom-shape sets load into persistent Shapes groups (#5359).
-  Original synthetic geometry is independently cross-read; Photoshop-written fixture verification remains open.
+  Photoshop's own sets read; the set's folders (`phry`) are not kept yet (one group per file).
 - **Detail:** [`file-format-parity.md`](file-format-parity.md).
 - **Progress (2026-10-13):** Cineon (`.cin`) 10-bit gray/RGB frames open read-only, sharing the
   DPX header/unpacking (`crates/codecs/src/codecs/dpx.rs`); writing is still open.
@@ -278,7 +278,7 @@ what an agent can't finish alone.
 |---|---|---|
 | 2026-10-15 | minor | G1 / #5972 A1: render only provably constant-RGB `GdFl` noise fills; variable noise synthesis remains open |
 | 2026-10-18 | minor | G9: with no selection, Copy takes fill and adjustment layers whole and Paste recreates them (#2344); UI-217-23 stays partial (a single pixel layer copies its pixels only); estimate unchanged |
-| 2026-10-14 | minor | CSH custom-shape set import (#5359, FILE-215-15); export and Photoshop-written fixture verification remain open; no estimate changed |
+| 2026-10-14 | minor | CSH custom-shape set import (#5359, FILE-215-15); reads Photoshop's own Default and Legacy sets; export and the sets' folders remain open; no estimate changed |
 | 2026-10-14 | minor | G1: a PSD smart object's filter mask shows when the file opens (Photoshop stores the filtered pixels unmasked); export stores them that way too; Photoshop-oracle floor 185 → 188 of 258 |
 | 2026-10-13 | minor | G14: D90 image area measured (4288 × 2848 at (10, 10)); gap remains open |
 | 2026-10-14 | minor | Corpus floors raised to the measured results of the CMYK, Lab, 32-bit, Levels, Threshold, Posterize, feather and pass-through fixes landed together: Photoshop-authored 165 → 185 of 258, io 146 → 148 of 170, psd-tools 242 → 249 of 309 |
