@@ -94,8 +94,15 @@ fn gpu() -> Option<Gpu> {
             return None;
         }
     };
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
     let info = adapter.get_info();
+    let (device, queue) = match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
+        Ok(d) => d,
+        Err(e) => {
+            assert!(!required, "WGPU_BACKEND is set but {} has no device: {e}", info.name);
+            eprintln!("skipping GPU parity tests: no device ({e})");
+            return None;
+        }
+    };
     eprintln!("GPU parity backend: {:?} ({}, {:?})", info.backend, info.name, info.device_type);
     // Exact parity needs 32-bit float targets. Adapters without them (e.g. GL software
     // rasterizers) use the CPU compositor in the app, so there is nothing to compare there.
@@ -104,14 +111,16 @@ fn gpu() -> Option<Gpu> {
         eprintln!("skipping GPU parity tests: adapter can't render Rgba32Float");
         return None;
     }
-    let comp = match Compositor::try_new_with_format(&device, wgpu::TextureFormat::Rgba32Float) {
+    let comps = Compositor::try_new_with_format(&device, wgpu::TextureFormat::Rgba32Float)
+        .and_then(|c| Ok((c, Compositor::try_new_with_format(&device, wgpu::TextureFormat::Rgba32Float)?)));
+    let (comp, mut paged) = match comps {
         Ok(c) => c,
         Err(e) => {
+            assert!(!required, "WGPU_BACKEND is set but {} can't build the compositor: {e}", info.name);
             eprintln!("skipping GPU parity tests: {e}");
             return None;
         }
     };
-    let mut paged = Compositor::try_new_with_format(&device, wgpu::TextureFormat::Rgba32Float).ok()?;
     paged.set_texture_limit(PAGED_LIMIT);
     Some(Gpu { device, queue, comp, paged, _lock: lock })
 }
@@ -1270,8 +1279,8 @@ fn runs_of_plain_layers_blend_in_one_pass() {
     // Consecutive plain layers are drawn several to a pass (`fs_layerbatch`). Every layer mode at
     // varied opacity and fill (the fill-special modes included), solid fills, layers that end
     // inside the canvas, and the layers that end a run: masked, Dissolve, small (clipped to their
-    // bounds) and clipping groups. Then an edit in the middle, so the prefix cache resumes
-    // part-way up the stack and runs start at its checkpoint.
+    // bounds) and clipping groups. Then an edit in the middle, so the prefix cache moves to
+    // a checkpoint below it, one where a run starts.
     let Some(mut g) = gpu() else { return };
     let mut d = base_doc(96, 64);
     let modes: Vec<BlendMode> = BlendMode::layer_modes().collect();

@@ -320,8 +320,9 @@ fn fill_is_special(mode: i32) -> bool {
 // colour (Hard Mix: (cb - f(1 - cs)) / (1 - f)) at `opacity`, Fill staying coverage over
 // transparency. Lab documents mix Normal in CIELAB; type layers mix in the text gamma space.
 fn composite_fill(mode: i32, b: vec4<f32>, s: vec4<f32>, opacity: f32, fill: f32, gamma_on: bool) -> vec4<f32> {
-    // The same code as fs_layerbatch_normal, so a layer gives the same bits whichever pass
-    // draws it (a render resumed from the prefix cache splits runs differently).
+    // The same code as fs_layerbatch_normal. A compiler may still give a layer other bits
+    // batched than drawn alone (FXC on D3D12), so the prefix cache resumes only where a run
+    // starts (`batch_runs`).
     if (mode == M_NORMAL && !gamma_on && (op.flags & F_LAB) == 0u) { return composite_normal_fill(b, s, opacity, fill); }
     let f = clamp(fill, 0.0, 1.0);
     let special = f < 1.0 && fill_is_special(mode);
