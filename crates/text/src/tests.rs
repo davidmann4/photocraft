@@ -1234,6 +1234,107 @@ fn txt2_frame_padding_is_bounded() {
     assert_eq!(frames, crate::psd::MAX_TEXT_INDEX as usize + 1);
 }
 
+/// A Photoshop-shaped `Txt2` text object for `text`: one paragraph run with the paragraph keys
+/// `para`, the style runs `runs` (`(UTF-16 length, style keys)`), and a view naming frame
+/// `frame`.
+fn ps_txt2_object(text: &str, para: &str, runs: &[(usize, &str)], frame: usize) -> String {
+    let bom = "\u{fe}\u{ff}";
+    let utf16: String = format!("{text}\r").chars().flat_map(|c| ['\0', c]).collect();
+    let len = text.chars().count() + 1;
+    let style: String = runs.iter().map(|(n, keys)| format!("<< /0 << /0 << /0 ({bom}) /6 << /0 0 /1 12.0 /11 1 {keys} >> >> >> /1 {n} >> ")).collect();
+    format!(
+        "<< /0 << /0 ({bom}{utf16}) /5 << /0 [ << /0 << /0 << /0 ({bom}) /5 << {para} >> >> >> /1 {len} >> ] >> /6 << /0 [ {style}] >> >> /1 << /0 [ << /0 {frame} >> ] /1 << /0 [ << /0 << /1 1 >> /1 {len} >> ] >> >> >> "
+    )
+}
+
+/// A `Txt2` block holding `objects`, a frame for each.
+fn ps_txt2(objects: &[String]) -> Vec<u8> {
+    let frames = "<< /0 << /2 << /2 [ 1.0 0.0 0.0 1.0 5.0 6.0 ] >> >> >> ".repeat(objects.len());
+    format!("\n\n/98 << /0 7 >> /0 << /8 << /0 [ {frames}] >> >> /1 << /1 [ {}] >> ", objects.concat()).chars().map(|c| c as u32 as u8).collect()
+}
+
+/// The style dictionaries of object `at`'s style runs in a built `Txt2` block.
+fn txt2_styles(block: &[u8], at: usize) -> Vec<crate::engine_data::Value> {
+    use crate::engine_data::Value as E;
+    let out = crate::psd::parse_txt2(block).unwrap();
+    let object = out.path(&["1", "1"]).and_then(E::as_array).unwrap()[at].clone();
+    object.path(&["0", "6", "0"]).and_then(E::as_array).unwrap().iter().map(|r| r.path(&["0", "0", "6"]).unwrap().clone()).collect()
+}
+
+/// Photoshop reads underline (`/16`), caps (`/12`), baseline shift (`/9`), strikethrough (`/15`)
+/// and the ligatures (`/18`, `/19`) from `Txt2`: an edited object's runs take them from each of
+/// the layer's runs, not all from the file's first run ("there", underlined, all caps and shifted,
+/// lost all three in Photoshop).
+#[test]
+fn edited_txt2_runs_take_each_runs_own_style_keys() {
+    use crate::engine_data::Value as E;
+    use photocraft_doc::text::Caps;
+    let prev = ps_txt2(&[ps_txt2_object("Hello world", "/0 0", &[(6, "/16 0 /18 false"), (6, "/16 1 /18 true")], 0)]);
+    let plain = CharStyle { ligatures: false, ..CharStyle::default() };
+    let marked =
+        CharStyle { underline: true, strikethrough: true, caps: Caps::AllCaps, baseline_shift_pt: 3.0, discretionary_ligatures: true, ..CharStyle::default() };
+    let t = runs_of("Hello there", &[(6, plain), (5, marked)]);
+    let styles = txt2_styles(&crate::psd::build_txt2(&[(0, &t)], Some(&prev)), 0);
+    let keys = |s: &E| ["9", "12", "15", "16", "18", "19"].map(|k| s.get(k).cloned());
+    assert_eq!(styles.len(), 2);
+    assert_eq!(keys(&styles[0]), [Some(E::Real(0.0)), Some(E::Int(0)), Some(E::Int(0)), Some(E::Int(0)), Some(E::Bool(false)), Some(E::Bool(false))]);
+    assert_eq!(keys(&styles[1]), [Some(E::Real(3.0)), Some(E::Int(2)), Some(E::Int(1)), Some(E::Int(1)), Some(E::Bool(true)), Some(E::Bool(true))]);
+}
+
+/// Photoshop reads the alignment from the `Txt2` paragraph runs: a new layer showed the
+/// template's (here centred), and an edited one its old alignment.
+#[test]
+fn new_and_edited_txt2_objects_take_the_layers_alignment() {
+    use crate::engine_data::Value as E;
+    use photocraft_doc::text::{ParagraphRun, ParagraphStyle, TextAlign};
+    let prev = ps_txt2(&[ps_txt2_object("Centred", "/0 2", &[(8, "")], 0)]);
+    let align = |block: &[u8], at: usize| -> Vec<Option<E>> {
+        let out = crate::psd::parse_txt2(block).unwrap();
+        let object = out.path(&["1", "1"]).and_then(E::as_array).unwrap()[at].clone();
+        object.path(&["0", "5", "0"]).and_then(E::as_array).unwrap().iter().map(|r| r.path(&["0", "0", "5", "0"]).cloned()).collect()
+    };
+    let kept = runs_of("Centred", &[(7, CharStyle::default())]);
+    let new = runs_of("Hi", &[(2, CharStyle::default())]);
+    assert_eq!(align(&crate::psd::build_txt2(&[(0, &kept), (1, &new)], Some(&prev)), 1), [Some(E::Int(0))], "a new left-aligned layer");
+    let mut edited = runs_of("A\nB\n", &[(4, CharStyle::default())]);
+    let para = |len, align| ParagraphRun { len, style: ParagraphStyle { align, ..ParagraphStyle::default() } };
+    edited.paragraphs = vec![para(2, TextAlign::Right), para(2, TextAlign::JustifyAll)];
+    assert_eq!(align(&crate::psd::build_txt2(&[(0, &edited)], Some(&prev)), 0), [Some(E::Int(1)), Some(E::Int(6)), Some(E::Int(6))]);
+}
+
+/// A run the save copies once per character run or paragraph is bounded by its size in bytes
+/// too: a crafted file's first style run (or paragraph run) holding one long string, and a layer
+/// of many runs (or paragraphs), made a plain open and save write a copy for each (80 MB from
+/// 200 KB here; gigabytes from a few MB).
+#[test]
+fn copied_txt2_runs_are_bounded_by_size() {
+    let long = "x".repeat(100_000);
+    let parts: Vec<(usize, CharStyle)> = (0..2000).map(|i| (1, CharStyle { size_pt: if i % 2 == 0 { 10.0 } else { 20.0 }, ..CharStyle::default() })).collect();
+    let t = runs_of(&"a".repeat(2000), &parts);
+    let prev = ps_txt2(&[ps_txt2_object("B", "/0 0", &[(2, &format!("/99 ({long})"))], 0)]);
+    let out = crate::psd::build_txt2(&[(0, &t)], Some(&prev));
+    assert!(out.len() < 1_000_000, "{} bytes written from {}", out.len(), prev.len());
+    let t = runs_of(&"a\n".repeat(2000), &[(4000, CharStyle::default())]);
+    let prev = ps_txt2(&[ps_txt2_object("B", &format!("/0 0 /99 ({long})"), &[(2, "")], 0)]);
+    let out = crate::psd::build_txt2(&[(0, &t)], Some(&prev));
+    assert!(out.len() < 1_000_000, "{} bytes written from {}", out.len(), prev.len());
+}
+
+/// The bound on copied runs holds for the whole save, not per layer: ten edited layers of 100
+/// runs, each on a file run of a 40 KB string, wrote 80 MB from 400 KB (the budget's 1 << 20
+/// units come to some 32 MB at most, strings being written as UTF-16).
+#[test]
+fn copied_txt2_runs_are_bounded_per_save() {
+    let long = "x".repeat(40_000);
+    let parts: Vec<(usize, CharStyle)> = (0..100).map(|i| (1, CharStyle { size_pt: if i % 2 == 0 { 10.0 } else { 20.0 }, ..CharStyle::default() })).collect();
+    let t = runs_of(&"a".repeat(100), &parts);
+    let objects: Vec<String> = (0..10).map(|i| ps_txt2_object("B", "/0 0", &[(2, &format!("/99 ({long})"))], i)).collect();
+    let prev = ps_txt2(&objects);
+    let layers: Vec<(i32, &TextLayer)> = (0..10).map(|i| (i, &t)).collect();
+    let out = crate::psd::build_txt2(&layers, Some(&prev));
+    assert!(out.len() < 40_000_000, "{} bytes written from {}", out.len(), prev.len());
+}
+
 /// The file's style runs are only reused when they cover the text: runs of another length (or
 /// hostile lengths) fall back to generated runs, without panicking.
 #[test]

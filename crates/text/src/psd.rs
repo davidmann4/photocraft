@@ -853,14 +853,7 @@ pub(crate) fn style_sheet_data(s: &CharStyle, font: usize, k: f32) -> E {
         ("AutoKerning".into(), E::Bool(s.kerning != Kerning::Off)),
         ("Kerning".into(), E::Int(kern_units(s.kern))),
         ("BaselineShift".into(), real(s.baseline_shift_pt / k)),
-        (
-            "FontCaps".into(),
-            E::Int(match s.caps {
-                Caps::Normal => 0,
-                Caps::SmallCaps => 1,
-                Caps::AllCaps => 2,
-            }),
-        ),
+        ("FontCaps".into(), E::Int(caps_code(s.caps))),
         ("Underline".into(), E::Bool(s.underline)),
         ("Strikethrough".into(), E::Bool(s.strikethrough)),
         ("Ligatures".into(), E::Bool(s.ligatures)),
@@ -873,8 +866,19 @@ pub(crate) fn style_sheet_data(s: &CharStyle, font: usize, k: f32) -> E {
     E::Dict(dict)
 }
 
-pub(crate) fn paragraph_properties(p: &ParagraphStyle, k: f32) -> E {
-    let j = match p.align {
+/// The caps setting as EngineData's `FontCaps` and `Txt2`'s `/12` store it.
+fn caps_code(caps: Caps) -> i64 {
+    match caps {
+        Caps::Normal => 0,
+        Caps::SmallCaps => 1,
+        Caps::AllCaps => 2,
+    }
+}
+
+/// The alignment as EngineData's `Justification` and a `Txt2` paragraph run's `/0` store it
+/// (checked in Photoshop: 1 right, 2 centre, 3 justify last left, 6 justify all).
+fn justification(align: TextAlign) -> i64 {
+    match align {
         TextAlign::Left => 0,
         TextAlign::Right => 1,
         TextAlign::Center => 2,
@@ -882,9 +886,12 @@ pub(crate) fn paragraph_properties(p: &ParagraphStyle, k: f32) -> E {
         TextAlign::JustifyRight => 4,
         TextAlign::JustifyCenter => 5,
         TextAlign::JustifyAll => 6,
-    };
+    }
+}
+
+pub(crate) fn paragraph_properties(p: &ParagraphStyle, k: f32) -> E {
     E::Dict(vec![
-        ("Justification".into(), E::Int(j)),
+        ("Justification".into(), E::Int(justification(p.align))),
         ("FirstLineIndent".into(), real(p.first_line_indent_pt / k)),
         ("StartIndent".into(), real(p.start_indent_pt / k)),
         ("EndIndent".into(), real(p.end_indent_pt / k)),
@@ -942,14 +949,18 @@ fn txt2_mode_runs(layer: &TextLayer) -> Vec<(i64, usize)> {
 /// `<< /0 << /0 << /6 style >> >> /1 length >>`, every key Photoshop wrote) with its style set
 /// from the run's own: font (`/0`, an index into `fonts`, the block's `/0 /1 /0` font list, which
 /// a missing font is appended to), size (`/1`), faux bold and italic, leading, scales and tracking
-/// (`/2`–`/8`, EngineData's order), fill colour (`/53`), the OpenType keys and the auto-kern mode
-/// (`/11`). Photoshop reads the character style from here rather than from EngineData, and quit
-/// on a run holding only the auto-kern mode. `None` when `base` has no style dictionary or is
-/// larger than a template may be (it is copied once per run).
-fn txt2_style_runs(layer: &TextLayer, base: &E, fonts: &mut Vec<E>, dpi: f32) -> Option<Vec<E>> {
-    if !matches!(base.path(&["0", "0", "6"]), Some(E::Dict(_))) || !fits(base, &mut { TEMPLATE_NODES }) {
+/// (`/2`–`/8`, EngineData's order), baseline shift (`/9`), caps (`/12`), strikethrough (`/15`),
+/// underline (`/16`), standard and discretionary ligatures (`/18`, `/19`), fill colour (`/53`),
+/// the OpenType keys and the auto-kern mode (`/11`). Photoshop reads the character style from
+/// here rather than from EngineData, and quit on a run holding only the auto-kern mode. `None`
+/// when `base` has no style dictionary, is larger than a template may be, or would be copied
+/// past what is left of the save's `budget` (it is copied once per run; see
+/// [`STYLE_RUNS_BUDGET`]).
+fn txt2_style_runs(layer: &TextLayer, base: &E, fonts: &mut Vec<E>, dpi: f32, budget: &mut usize) -> Option<Vec<E>> {
+    if !matches!(base.path(&["0", "0", "6"]), Some(E::Dict(_))) {
         return None;
     }
+    let base_cost = cost(base, TEMPLATE_NODES)?;
     let k = if dpi.is_finite() && dpi > 0.0 { dpi / 72.0 } else { 1.0 };
     let runs = layer.char_runs();
     let ed_text = format!("{}\r", layer.text.replace('\n', "\r"));
@@ -966,6 +977,7 @@ fn txt2_style_runs(layer: &TextLayer, base: &E, fonts: &mut Vec<E>, dpi: f32) ->
             _ => spans.push((ri, n)),
         }
     }
+    *budget = budget.checked_sub(spans.len().saturating_mul(base_cost))?;
     let default = CharStyle::default();
     let mut out = Vec::with_capacity(spans.len());
     let mut looked_up = std::collections::HashMap::new();
@@ -985,6 +997,15 @@ fn txt2_style_runs(layer: &TextLayer, base: &E, fonts: &mut Vec<E>, dpi: f32) ->
         style.set("6", real(s.horizontal_scale));
         style.set("7", real(s.vertical_scale));
         style.set("8", E::Int(s.tracking.round() as i64));
+        style.set("9", real(s.baseline_shift_pt * k));
+        style.set("12", E::Int(caps_code(s.caps)));
+        style.set("15", E::Int(i64::from(s.strikethrough)));
+        // 1 is Photoshop's underline of horizontal text; a base that already underlines keeps
+        // its own value.
+        let side = style.get("16").and_then(E::as_i64).filter(|v| *v > 0).unwrap_or(1);
+        style.set("16", E::Int(if s.underline { side } else { 0 }));
+        style.set("18", E::Bool(s.ligatures));
+        style.set("19", E::Bool(s.discretionary_ligatures));
         if let Some(paint @ E::Dict(_)) = style.get_mut("53").and_then(|p| p.get_mut("0")) {
             let (kind, values) = fill_color(&s.color);
             paint.set("0", E::Int(kind));
@@ -1067,11 +1088,15 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
     let mut slots: Vec<E> = prev_objects.to_vec();
     let mut fonts: Vec<E> = prev.as_ref().and_then(|p| p.path(&["0", "1", "0"]).and_then(E::as_array)).map(<[E]>::to_vec).unwrap_or_default();
     let fonts_before = fonts.len();
+    let mut copies = STYLE_RUNS_BUDGET;
     // Looked up once per save, not per layer: a crafted block with many objects must not cost
     // a pass over all of them for every type layer.
     let all_stubs = prev_objects.iter().all(is_stub);
     // A template is copied once per new layer, so a large one is skipped (the stub is written).
-    let template = prev_objects.iter().rev().find(|o| names_one_frame(o) && fits(o, &mut { TEMPLATE_NODES }) && edited_object(o, "\r").is_some());
+    let template = prev_objects
+        .iter()
+        .rev()
+        .find(|o| names_one_frame(o) && fits(o, &mut { TEMPLATE_NODES }) && edited_object(o, "\r", &mut { STYLE_RUNS_BUDGET }).is_some());
     for (index, layer) in objects {
         if !(0..=MAX_TEXT_INDEX).contains(index) {
             continue;
@@ -1088,12 +1113,12 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
         // the file's structure — paragraph runs, the view naming its frame, the rest — with every
         // run array refitted to the new text. A bare `<< /0 << /0 text /6 runs >> >>` stub in
         // Photoshop's block (no paragraph runs, no view) made Photoshop quit while opening the file.
-        let edited = kept.is_none().then(|| slot.and_then(|o| edited_object(o, &text))).flatten();
+        let edited = kept.is_none().then(|| slot.and_then(|o| edited_object(o, &text, &mut copies))).flatten();
         // A new object (#7698): a layer the file's block has no object for (a type layer added
         // here) takes the shape of one of the file's own objects, refitted the same way, with its
         // view naming its own frame. A bare stub beside Photoshop's objects, its slot without a
         // frame in `/0 /8 /0`, made Photoshop and Photopea refuse the file.
-        let fresh = (kept.is_none() && edited.is_none()).then(|| template.and_then(|t| new_object(t, at, &text))).flatten();
+        let fresh = (kept.is_none() && edited.is_none()).then(|| template.and_then(|t| new_object(t, at, &text, &mut copies))).flatten();
         let reuse = kept.is_some() || edited.is_some();
         let unchanged = kept.is_some();
         let mut object = kept.cloned().or(edited).or(fresh).unwrap_or_else(E::dict);
@@ -1101,10 +1126,11 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
         // A new or edited object takes the layer's own style: Photoshop reads the character style
         // from these runs, so the template's (or the old text's) would show, and come back on
         // reopen. They are built on one of the object's own runs, every key Photoshop wrote kept.
-        let styled = (!unchanged && !is_stub(&object))
+        let restyle = !unchanged && !is_stub(&object);
+        let styled = restyle
             .then(|| model.path(&["6", "0"]).and_then(E::as_array).and_then(<[E]>::first).cloned())
             .flatten()
-            .and_then(|base| txt2_style_runs(layer, &base, &mut fonts, dpi));
+            .and_then(|base| txt2_style_runs(layer, &base, &mut fonts, dpi, &mut copies));
         let file_runs = reuse.then(|| model.path(&["6", "0"]).and_then(E::as_array)).flatten().and_then(|runs| with_modes(runs, &modes));
         let runs = styled.or(file_runs).unwrap_or_else(|| {
             modes
@@ -1118,6 +1144,9 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
                 .collect()
         });
         model.set("0", E::String(text));
+        if restyle {
+            align_paragraphs(&mut model, layer);
+        }
         match model.get_mut("6") {
             Some(style_run @ E::Dict(_)) => style_run.set("0", E::Array(runs)),
             _ => model.set("6", E::Dict(vec![("0".into(), E::Array(runs))])),
@@ -1160,14 +1189,54 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
 /// own objects hold a few hundred (611 at most in the file from #7698).
 const TEMPLATE_NODES: usize = 4096;
 
+/// The most one save copies of style and paragraph runs, in [`fits`]'s units, over all its
+/// objects: a run is copied once per character run or paragraph of a layer, so a large run times
+/// many of them (or many such layers) must not blow up the save. Photoshop's runs cost about 60,
+/// so this allows some 17 000 copied runs per save.
+const STYLE_RUNS_BUDGET: usize = 1 << 20;
+
 /// Whether `v` holds at most `budget` values, counting down `budget` (stops at the first one over).
+/// A string, name or key also counts one per 16 bytes: a crafted file's single value can hold
+/// megabytes.
 fn fits(v: &E, budget: &mut usize) -> bool {
-    let Some(left) = budget.checked_sub(1) else { return false };
-    *budget = left;
+    fn take(budget: &mut usize, n: usize) -> bool {
+        budget.checked_sub(n).map(|left| *budget = left).is_some()
+    }
+    if !take(budget, 1) {
+        return false;
+    }
     match v {
-        E::Dict(items) => items.iter().all(|(_, x)| fits(x, budget)),
+        E::Dict(items) => items.iter().all(|(k, x)| take(budget, k.len() / 16) && fits(x, budget)),
         E::Array(items) => items.iter().all(|x| fits(x, budget)),
+        E::String(s) | E::Name(s) => take(budget, s.len() / 16),
         _ => true,
+    }
+}
+
+/// What `v` costs in [`fits`]'s units, or `None` when it is over `limit`.
+fn cost(v: &E, limit: usize) -> Option<usize> {
+    let mut left = limit;
+    fits(v, &mut left).then(|| limit - left)
+}
+
+/// Sets the alignment (`/0`) of the paragraph runs (`/5 /0`, one per paragraph, as
+/// [`edited_object`] fits them) of the text model `model` to `layer`'s paragraphs: Photoshop reads
+/// it from here, so a new object showed the template's alignment and an edited one its old one.
+fn align_paragraphs(model: &mut E, layer: &TextLayer) {
+    let Some(E::Array(runs)) = model.get_mut("5").and_then(|p| p.get_mut("0")) else { return };
+    let paras = layer.paragraph_runs();
+    let (mut start, mut pi, mut para_end) = (0usize, 0usize, paras.first().map_or(0, |p| p.len));
+    // The engine text ends in a break, so it has an empty paragraph after a trailing `\n`.
+    for (run, paragraph) in runs.iter_mut().zip(layer.text.split_inclusive('\n').chain([""])) {
+        while start >= para_end && pi + 1 < paras.len() {
+            pi += 1;
+            para_end = para_end.saturating_add(paras.get(pi).map_or(0, |p| p.len));
+        }
+        start = start.saturating_add(paragraph.len());
+        let Some(align) = paras.get(pi).map(|p| p.style.align) else { continue };
+        if let Some(style @ E::Dict(_)) = run.get_mut("0").and_then(|r| r.get_mut("0")).and_then(|r| r.get_mut("5")) {
+            style.set("0", E::Int(justification(align)));
+        }
     }
 }
 
@@ -1181,11 +1250,11 @@ fn names_one_frame(object: &E) -> bool {
 /// `template` refitted to `text` by [`edited_object`], its view now naming frame `at` and its view
 /// runs (`/1 /1 /0`, one per paragraph) remade for the new paragraphs. `None` when the template
 /// can't be refitted.
-fn new_object(template: &E, at: usize, text: &str) -> Option<E> {
+fn new_object(template: &E, at: usize, text: &str, budget: &mut usize) -> Option<E> {
     let paragraphs: Vec<usize> = text.split_inclusive('\r').map(|p| p.encode_utf16().count()).collect();
     let frame = template.path(&["1", "0"]).and_then(E::as_array).and_then(|f| f.first()).and_then(|f| f.get("0")).cloned();
     let at = i64::try_from(at).ok()?;
-    let mut object = edited_object(template, text)?;
+    let mut object = edited_object(template, text, budget)?;
     let view = object.get_mut("1")?;
     view.set("0", E::Array(vec![E::Dict(vec![("0".into(), E::Int(at))])]));
     // The rendered strikes' frame strike (`/F`) names the template's frame too.
@@ -1198,7 +1267,7 @@ fn new_object(template: &E, at: usize, text: &str) -> Option<E> {
         }
     }
     if let Some(runs) = view.path(&["1", "0"]).and_then(E::as_array) {
-        let fitted = runs_per(runs, &paragraphs)?;
+        let fitted = runs_per(runs, &paragraphs, budget)?;
         view.get_mut("1")?.set("0", E::Array(fitted));
     }
     Some(object)
@@ -1235,7 +1304,7 @@ fn pad_frames(outer: &mut E, count: usize) {
 /// extended at its end to the new length. The view and the other keys are kept, except the glyph
 /// pen positions (`/21`), which belong to the old text. `None` when the object or one of its run
 /// arrays isn't shaped as Photoshop writes it: the caller writes a fresh object instead.
-fn edited_object(object: &E, text: &str) -> Option<E> {
+fn edited_object(object: &E, text: &str, budget: &mut usize) -> Option<E> {
     let mut object = object.clone();
     let E::Dict(items) = &mut object else { return None };
     items.retain(|(k, _)| k != "21");
@@ -1251,16 +1320,21 @@ fn edited_object(object: &E, text: &str) -> Option<E> {
         let Some(runs) = value.get("0").and_then(E::as_array).filter(|r| r.iter().all(|x| matches!(x, E::Dict(_)) && x.get("1").is_some())) else {
             continue;
         };
-        let fitted = if key.as_str() == "5" { runs_per(runs, &paragraphs)? } else { runs_to_length(runs, total)? };
+        let fitted = if key.as_str() == "5" { runs_per(runs, &paragraphs, budget)? } else { runs_to_length(runs, total)? };
         value.set("0", E::Array(fitted));
     }
     Some(object)
 }
 
 /// `runs` (`<< … /1 length >>`) remade with the lengths `lens`: run i keeps the content of the
-/// file's run i, else of its last one. `None` for an empty `runs`.
-fn runs_per(runs: &[E], lens: &[usize]) -> Option<Vec<E>> {
+/// file's run i, else of its last one. `None` for an empty `runs`, or when the copies of the last
+/// one would cost more than is left of the save's `budget` (see [`STYLE_RUNS_BUDGET`]).
+fn runs_per(runs: &[E], lens: &[usize], budget: &mut usize) -> Option<Vec<E>> {
     let last = runs.last()?;
+    let copies = lens.len().saturating_sub(runs.len());
+    if copies > 0 {
+        *budget = budget.checked_sub(copies.saturating_mul(cost(last, *budget)?))?;
+    }
     lens.iter()
         .enumerate()
         .map(|(i, &len)| {
