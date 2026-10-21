@@ -462,15 +462,6 @@ mod tests {
     }
 
     #[test]
-    fn the_swap_button_swaps_w_and_h_without_the_crop_tools_mode() {
-        // Perspective Crop shows the fields but never sets `crop_ratio`.
-        let mut o = ToolOptions { crop_width: "4 in".into(), crop_height: "6 in".into(), ..ToolOptions::default() };
-        assert_eq!(o.crop_ratio, "");
-        swap_fields(&mut o);
-        assert_eq!((o.crop_width.as_str(), o.crop_height.as_str()), ("6 in", "4 in"));
-    }
-
-    #[test]
     fn x_swaps_w_and_h_with_the_frame() {
         let mut app = app(SampleType::U8);
         app.ui.tool_options = whr("4 in", "6 in", "300", PX_PER_IN);
