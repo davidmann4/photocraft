@@ -880,11 +880,13 @@ impl Session {
             st.coalesce = None;
         } else if key.is_none() || st.coalesce != key || !st.history.can_undo() {
             st.history.set_current_layers(prior);
-            st.history.record(label, before, layers);
+            st.history.record(label, before.clone(), layers);
+            st.history.add_current_visibility(&visibility_changes(&before, &st.doc));
             st.trim_history();
             st.coalesce = key;
         } else {
             st.history.set_current_layers(layers);
+            st.history.add_current_visibility(&visibility_changes(&before, &st.doc));
             st.coalesce = key;
         }
         st.revision += 1;
@@ -965,13 +967,19 @@ impl Session {
         if self.active_job().is_some() {
             return false;
         }
+        let keep_visibility = !self.visibility_undoable();
         let Some(st) = self.active_mut() else { return false };
         st.coalesce = None;
+        // The step being undone: the layers whose visibility it changed get it back.
+        let changed = st.history.current_visibility().to_vec();
         match st.history.undo(st.doc.clone()) {
             Some((mut d, layers)) => {
                 // Save As changes file identity outside history, just like the saved path.
                 if d.name != st.doc.name {
                     Arc::make_mut(&mut d).name.clone_from(&st.doc.name);
+                }
+                if keep_visibility {
+                    carry_visibility(&st.doc, &mut d, &changed);
                 }
                 // Pixels this step can have touched, so the canvas recomposites only that
                 // (it recomposited everything before).
@@ -990,12 +998,18 @@ impl Session {
         if self.active_job().is_some() {
             return false;
         }
+        let keep_visibility = !self.visibility_undoable();
         let Some(st) = self.active_mut() else { return false };
         st.coalesce = None;
         match st.history.redo(st.doc.clone()) {
             Some((mut d, layers)) => {
                 if d.name != st.doc.name {
                     Arc::make_mut(&mut d).name.clone_from(&st.doc.name);
+                }
+                if keep_visibility {
+                    // The step being redone sets the visibility it changed again.
+                    let changed = st.history.current_visibility().to_vec();
+                    carry_visibility(&st.doc, &mut d, &changed);
                 }
                 let damage = layer_multi_cmds::step_damage(&st.doc, &d);
                 st.doc = d;
@@ -1007,6 +1021,70 @@ impl Session {
             None => false,
         }
     }
+}
+
+impl Session {
+    /// Take back the step a compound command just recorded, after its later part failed: the
+    /// document before the command is current again, nothing is left to redo, and in non-linear
+    /// history the later states that step moved stay where they were (an undo would land on the
+    /// last of them). Falls back to Undo plus forgetting the redo states when the history
+    /// changed since that step. Returns whether a step was taken back.
+    pub fn rollback(&mut self) -> bool {
+        if self.active_job().is_some() {
+            return false;
+        }
+        let Some(st) = self.active_mut() else { return false };
+        st.coalesce = None;
+        let Some((mut d, layers)) = st.history.rollback() else {
+            let undone = self.undo();
+            if undone && let Some(st) = self.active_mut() {
+                st.history.clear_redo();
+            }
+            return undone;
+        };
+        if d.name != st.doc.name {
+            Arc::make_mut(&mut d).name.clone_from(&st.doc.name);
+        }
+        let damage = layer_multi_cmds::step_damage(&d, &st.doc);
+        st.doc = d;
+        restore_target(st, layers);
+        st.revision += 1;
+        st.last_damage = damage;
+        true
+    }
+}
+
+/// History Options › Make Layer Visibility Changes Undoable off: showing or hiding a layer is not
+/// a history state, so stepping through history must not bring the old visibility back either
+/// (history states hold whole documents). Gives every layer of `to` that `from` also has the
+/// visibility it has in `from`, except the `stepped` layers: a recorded step between the two
+/// states changed their visibility (Apply Layer Comp, a snapshot, a visibility change recorded
+/// while the option was on), so they keep the visibility `to` holds. Layers only one of them has
+/// keep theirs. Copies `to` only when something differs.
+pub(crate) fn carry_visibility(from: &Document, to: &mut Arc<Document>, stepped: &[LayerId]) {
+    let visible: std::collections::HashMap<LayerId, bool> = from.walk().into_iter().map(|(_, _, l)| (l.id, l.visible)).collect();
+    let changes: Vec<(LayerId, bool)> = to
+        .walk()
+        .into_iter()
+        .filter(|(_, _, l)| !stepped.contains(&l.id))
+        .filter_map(|(_, _, l)| visible.get(&l.id).filter(|v| **v != l.visible).map(|v| (l.id, *v)))
+        .collect();
+    if changes.is_empty() {
+        return;
+    }
+    let d = Arc::make_mut(to);
+    for (id, v) in changes {
+        if let Some(l) = d.layer_mut(id) {
+            l.visible = v;
+        }
+    }
+}
+
+/// The layers (in both documents) whose visibility differs between `before` and `after`: what a
+/// recorded step changed, for [`photocraft_ops::History::add_current_visibility`].
+pub(crate) fn visibility_changes(before: &Document, after: &Document) -> Vec<LayerId> {
+    let visible: std::collections::HashMap<LayerId, bool> = before.walk().into_iter().map(|(_, _, l)| (l.id, l.visible)).collect();
+    after.walk().into_iter().filter(|(_, _, l)| visible.get(&l.id).is_some_and(|v| *v != l.visible)).map(|(_, _, l)| l.id).collect()
 }
 
 /// Undo / redo: target the layers the restored state targeted, as far as they still exist.

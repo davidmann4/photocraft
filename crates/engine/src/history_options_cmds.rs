@@ -135,9 +135,10 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(current(s))
 }
 
-/// History panel › Delete in non-linear history: delete state `i` (indexed like
-/// [`photocraft_ops::History::entries`], `current` = the current state's index) and nothing
-/// else. Deleting the current state steps back to the one before it; the later states stay.
+/// History panel › Delete in non-linear history: delete state `i` (numbered as the History panel
+/// lists them, `current` = the current state's index, the later dimmed states after it) and
+/// nothing else. Deleting the current state steps back to the one before it; the later states
+/// stay.
 pub(crate) fn delete_state(s: &mut Session, i: usize, current: usize) -> Result<()> {
     if i == 0 {
         return Err(EngineError::BadParams { cmd: "history.deleteState".into(), msg: "the oldest state can't be deleted".into() });
@@ -146,10 +147,15 @@ pub(crate) fn delete_state(s: &mut Session, i: usize, current: usize) -> Result<
     if s.active_job().is_some() {
         return Err(EngineError::Other("the history can't step back right now".into()));
     }
+    let keep_visibility = !s.visibility_undoable();
     let st = s.active_mut().ok_or(EngineError::NoDocument)?;
     st.coalesce = None;
-    if i < current {
-        if !st.history.remove(i) {
+    if i != current {
+        let removed = match i.checked_sub(current.saturating_add(1)) {
+            Some(j) => st.history.remove_later(j),
+            None => st.history.remove(i),
+        };
+        if !removed {
             return Err(EngineError::Other(format!("state {i} is not held")));
         }
         // The document is unchanged, but the History panel's rows are not.
@@ -157,10 +163,15 @@ pub(crate) fn delete_state(s: &mut Session, i: usize, current: usize) -> Result<
         st.last_damage = Some(photocraft_geom::Rect::EMPTY);
         return Ok(());
     }
+    // The step that made the current state: the layers whose visibility it changed get it back.
+    let changed = st.history.current_visibility().to_vec();
     let (mut d, layers) = st.history.drop_current().ok_or_else(|| EngineError::Other("the history can't step back right now".into()))?;
     // As Undo does: Save As changes file identity outside history.
     if d.name != st.doc.name {
         std::sync::Arc::make_mut(&mut d).name.clone_from(&st.doc.name);
+    }
+    if keep_visibility {
+        crate::carry_visibility(&st.doc, &mut d, &changed);
     }
     let damage = crate::layer_multi_cmds::step_damage(&d, &st.doc);
     st.doc = d;
@@ -299,6 +310,98 @@ mod tests {
         s.execute("edit.undo", json!({})).unwrap();
         s.execute("layer.setProps", json!({"layer": id, "visible": true})).unwrap();
         assert!(s.active().unwrap().history.can_redo());
+    }
+
+    fn visible(s: &Session, id: u64) -> bool {
+        s.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().visible
+    }
+
+    fn red(s: &Session, id: u64) -> bool {
+        let st = s.active().unwrap();
+        st.doc.layer(photocraft_doc::LayerId(id)).unwrap().surface().unwrap().pixel(1, 1)[0] > 0.5
+    }
+
+    /// Off, showing or hiding a layer is not a state, so stepping through history (Undo, Redo, a
+    /// History row) leaves the visibility as the user set it, as Photoshop does; history states
+    /// hold whole documents and would otherwise bring the old visibility back.
+    #[test]
+    fn stepping_through_history_keeps_unrecorded_visibility() {
+        let (mut s, id) = doc();
+        s.execute(CMD, json!({"makeLayerVisibilityChangesUndoable": false})).unwrap();
+        s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        s.execute("layer.setProps", json!({"layer": id, "visible": false})).unwrap();
+        assert!(s.execute("edit.undo", json!({})).unwrap().as_bool().unwrap());
+        assert!(!red(&s, id), "the fill is undone");
+        assert!(!visible(&s, id), "the layer stays hidden");
+        s.execute("layer.setProps", json!({"layer": id, "visible": true})).unwrap();
+        s.execute("edit.redo", json!({})).unwrap();
+        assert!(red(&s, id) && visible(&s, id), "redo brings the fill back, not the hidden layer");
+        s.execute("layer.setProps", json!({"layer": id, "visible": false})).unwrap();
+        // History rows: New, New Layer, Fill.
+        s.execute("history.selectState", json!({"state": 1})).unwrap();
+        assert!(!red(&s, id) && !visible(&s, id));
+        s.execute("history.selectState", json!({"state": 2})).unwrap();
+        assert!(red(&s, id) && !visible(&s, id));
+
+        // On (the default): Undo takes the hide back first, then the fill.
+        let (mut s, id) = doc();
+        s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        s.execute("layer.setProps", json!({"layer": id, "visible": false})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(red(&s, id) && visible(&s, id));
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(!red(&s, id) && visible(&s, id));
+        s.execute("history.selectState", json!({"state": 3})).unwrap();
+        assert!(red(&s, id) && !visible(&s, id), "the hide is a state of its own");
+    }
+
+    /// Off, only the unrecorded visibility changes carry across history: a recorded step that
+    /// changed visibility (Apply Layer Comp) gives it back when undone and sets it again when
+    /// redone, whether by Undo / Redo, a History row or deleting the current state.
+    #[test]
+    fn stepping_over_a_recorded_visibility_change_restores_it() {
+        let (mut s, id) = doc();
+        s.execute(CMD, json!({"makeLayerVisibilityChangesUndoable": false})).unwrap();
+        // A comp with the layer hidden, then the eye shows it again (no state) and a fill.
+        s.execute("layer.setProps", json!({"layer": id, "visible": false})).unwrap();
+        s.execute("layerComp.new", json!({"name": "Hidden"})).unwrap();
+        s.execute("layer.setProps", json!({"layer": id, "visible": true})).unwrap();
+        s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        s.execute("layerComp.apply", json!({"comp": "Hidden"})).unwrap();
+        assert!(red(&s, id) && !visible(&s, id), "the comp hides the layer");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(red(&s, id) && visible(&s, id), "undoing Apply Layer Comp shows the layer again");
+        // The eye hides it (no state): undoing the fill keeps that.
+        s.execute("layer.setProps", json!({"layer": id, "visible": false})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(!red(&s, id) && !visible(&s, id), "the unrecorded hide carries across the fill's undo");
+        s.execute("edit.redo", json!({})).unwrap();
+        assert!(red(&s, id) && !visible(&s, id));
+        s.execute("layer.setProps", json!({"layer": id, "visible": true})).unwrap();
+        s.execute("edit.redo", json!({})).unwrap();
+        assert!(red(&s, id) && !visible(&s, id), "redoing the comp hides the layer again");
+
+        // History rows: New, New Layer, New Layer Comp, Fill, Apply Layer Comp.
+        assert_eq!(entries(&s).len(), 5);
+        s.execute("history.selectState", json!({"state": 2})).unwrap();
+        assert!(!red(&s, id) && visible(&s, id), "jumping back over the comp shows the layer again");
+        s.execute("history.selectState", json!({"state": 4})).unwrap();
+        assert!(red(&s, id) && !visible(&s, id), "jumping forward over the comp hides it again");
+
+        // Non-linear Delete of the current state (the comp) steps back and shows the layer too.
+        s.execute(CMD, json!({"allowNonLinearHistory": true})).unwrap();
+        s.execute("history.deleteState", json!({})).unwrap();
+        assert!(red(&s, id) && visible(&s, id), "deleting the comp's state shows the layer again");
+
+        // Non-linear Delete of a past state: the step after it now starts from the state before
+        // it, so undoing that step also gives back the visibility the deleted step changed.
+        s.execute("layerComp.apply", json!({"comp": "Hidden"})).unwrap();
+        s.execute("edit.fill", json!({"color": "#0000ff"})).unwrap();
+        let comp = entries(&s).len() - 2;
+        s.execute("history.deleteState", json!({"state": comp})).unwrap();
+        assert!(!visible(&s, id));
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(red(&s, id) && visible(&s, id), "back at the red fill, where the layer was shown");
     }
 
     #[test]
@@ -448,5 +551,61 @@ mod tests {
         s.execute("prefs.set", json!({"path": "historyOptions.showNewSnapshotDialogByDefault", "value": true})).unwrap();
         assert!(show_new_snapshot_dialog(&s));
         assert_eq!(crate::inspect::session(&s)["historyOptions"]["showNewSnapshotDialogByDefault"], json!(true));
+    }
+
+    /// With the oldest state current, non-linear Delete is still enabled for a later (dimmed)
+    /// state (the History panel's trash and its drop target ask for it); linear history has
+    /// nothing to delete there.
+    #[test]
+    fn non_linear_delete_is_enabled_while_the_oldest_state_is_current() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 16, "height": 16})).unwrap();
+        for c in ["#ff0000", "#00ff00"] {
+            s.execute("edit.fill", json!({"color": c})).unwrap();
+        }
+        s.execute("edit.undo", json!({})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(!s.is_enabled("history.deleteState"), "linear: only the oldest state is left to delete");
+        s.execute(CMD, json!({"allowNonLinearHistory": true})).unwrap();
+        assert!(s.is_enabled("history.deleteState"));
+        let doc = s.active().unwrap().doc.clone();
+        s.execute("history.deleteState", json!({"state": 1})).unwrap();
+        let st = s.active().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&st.doc, &doc), "the document is unchanged");
+        assert_eq!(st.history.redo_labels().count(), 1, "only the first fill went");
+        assert!(s.execute("history.deleteState", json!({})).is_err(), "the oldest state itself stays");
+        s.execute("history.deleteState", json!({"state": 1})).unwrap();
+        assert!(!s.is_enabled("history.deleteState"), "nothing left but the oldest state");
+    }
+
+    /// Non-linear Delete reaches a later (dimmed) state too, and deletes only it; linear history
+    /// still refuses one past the current state.
+    #[test]
+    fn non_linear_delete_removes_a_later_state() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 16, "height": 16})).unwrap();
+        for c in ["#ff0000", "#00ff00", "#0000ff"] {
+            s.execute("edit.fill", json!({"color": c})).unwrap();
+        }
+        s.execute("edit.undo", json!({})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(s.execute("history.deleteState", json!({"state": 2})).is_err(), "linear: not a deletable state");
+        s.execute(CMD, json!({"allowNonLinearHistory": true})).unwrap();
+        let doc = s.active().unwrap().doc.clone();
+        let mut expected = entries(&s);
+        let mut redo: Vec<String> = s.active().unwrap().history.redo_labels().map(str::to_string).collect();
+        // Entries: New, Fill (current), then the dimmed Fill 2 (state 2) and Fill 3 (state 3).
+        s.execute("history.deleteState", json!({"state": 2})).unwrap();
+        redo.remove(0);
+        let st = s.active().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&st.doc, &doc), "the document is unchanged");
+        assert_eq!(st.history.redo_labels().map(str::to_string).collect::<Vec<_>>(), redo);
+        assert_eq!(entries(&s), expected);
+        assert!(s.execute("history.deleteState", json!({"state": 4})).is_err(), "past the last state");
+        s.execute("edit.redo", json!({})).unwrap();
+        expected.push(redo[0].clone());
+        assert_eq!(entries(&s), expected);
+        let px = s.active().unwrap().doc.layers[0].surface().unwrap().pixel(1, 1);
+        assert!(px[2] > 0.5 && px[1] < 0.5, "redo reaches the blue fill: {px:?}");
     }
 }
