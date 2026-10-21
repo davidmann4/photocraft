@@ -3453,11 +3453,11 @@ fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if ctx.input(|i| i.pointer.any_released()) {
         ctx.data_mut(|d| d.remove::<HistoryDrag>(history_drag_key()));
     }
-    // An open Free Transform owns Undo (transform_tool::intercept): stepping the document's history under
-    // its box would leave it transforming pixels that changed.
     if snapshot_dialog {
         crate::snapshot_dialog::open(app);
     }
+    // An open Free Transform owns Undo (transform_tool::intercept): stepping the document's history under
+    // its box would leave it transforming pixels that changed.
     // Selecting a snapshot changes the document, so it waits for an open transform like the rows.
     let snap_cmd = snap_cmd.filter(|(cmd, _)| *cmd != "history.selectSnapshot" || app.ui.transform.is_none());
     if let Some((cmd, p)) = footer_cmd.filter(|_| app.ui.transform.is_none()).or(snap_cmd) {
@@ -3522,16 +3522,17 @@ fn selected_snapshot(ctx: &egui::Context, st: &photocraft_engine::DocState) -> O
     live.then_some(id)
 }
 
-/// The History panel's snapshot rows (#2966), under the opening row, each with its thumbnail and
-/// name: a click returns to the snapshot (a new state) and selects it, a double-click or
-/// right-click › Rename… edits the name in place (Enter or a click elsewhere keeps it, Escape
-/// cancels), right-click › Delete removes it, and a drag onto the trash too (#5324). Returns the
-/// command a row asks for.
+/// The History panel's snapshot rows (#2966), at the top of the panel (the first is the document
+/// as opened), each with its thumbnail and name: a click returns to the snapshot (a new state)
+/// and selects it, a double-click or right-click › Rename… edits the name in place (Enter or a
+/// click elsewhere keeps it, Escape cancels), right-click › Delete removes it, and a drag onto the
+/// trash too (#5324). Returns the command a row asks for.
 fn snapshot_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, selected: Option<u64>) -> Option<(&'static str, Value)> {
     let t = Tokens::get(ui.ctx());
     let st = app.session.active()?;
     let (doc_id, snaps) = (st.doc.id, st.snapshots.clone());
     let live: Vec<u64> = snaps.iter().map(|s| s.id).collect();
+    app.retain_snapshot_thumbs(doc_id, &live);
     // Per document: snapshot ids restart in each, and a tab switch must not carry the edit over.
     let rename_id = egui::Id::new(("history-snapshot-rename", doc_id));
     let mut renaming: Option<(u64, String)> = ui.data(|d| d.get_temp(rename_id)).flatten();
@@ -3551,7 +3552,7 @@ fn snapshot_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, selected: Option<u6
         }
         let thumb = Rect::from_min_size(pos2(rect.left() + 28.0, rect.center().y - 14.0), vec2(28.0, 28.0));
         widgets::checker(ui.painter(), thumb, 4.0);
-        let tex = app.snapshot_thumb(&ctx, doc_id, snap, &live);
+        let tex = app.snapshot_thumb(&ctx, doc_id, snap);
         ui.painter().image(tex, thumb, Rect::from_min_max(egui::Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
         ui.painter().rect_stroke(thumb, 0.0, Stroke::new(1.0, t.separator), StrokeKind::Outside);
         match renaming.as_mut().filter(|(id, _)| *id == snap.id) {
@@ -5392,6 +5393,35 @@ mod snapshot_row_tests {
             h.run_steps(3);
             assert_eq!(h.query_by_label(&name).is_some(), first, "a snapshot row named after the document: {first}");
         }
+    }
+
+    /// Snapshot thumbnails belong to the snapshot's document (#6087): closing a document drops
+    /// them, and a document reopened with the same id (a `.pcraft` keeps it) gets fresh ones
+    /// rather than the closed document's, even before the views are synced.
+    #[test]
+    fn snapshot_thumbnails_follow_their_document() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 200, "height": 150})).unwrap();
+        let doc = (*app.session.active().unwrap().doc).clone();
+        let doc_id = doc.id;
+        let mut h = Harness::builder().with_size(vec2(300.0, 400.0)).build_ui_state(|ui, app: &mut PhotocraftApp| history(app, ui), app);
+        h.run_steps(2);
+        let thumb = |h: &Harness<'static, PhotocraftApp>| h.state().snapshot_thumbs.get(&(doc_id, 0)).map(|(_, t)| t.id());
+        let first = thumb(&h).expect("the first snapshot's thumbnail");
+        // Closed: its thumbnails go with it.
+        h.state_mut().session.close(0);
+        h.state_mut().sync_views();
+        assert!(h.state().snapshot_thumbs.keys().all(|(d, _)| *d != doc_id), "closing drops them");
+        h.state_mut().session.add_document(doc.clone(), None);
+        h.run_steps(2);
+        let reopened = thumb(&h).expect("a thumbnail for the reopened document");
+        assert_ne!(reopened, first);
+        // Closed and reopened between two frames, with no sync in between: still a fresh one.
+        h.state_mut().session.close(0);
+        h.state_mut().session.add_document(doc, None);
+        assert_eq!(h.state().session.active().unwrap().doc.id, doc_id, "same id");
+        h.run_steps(2);
+        assert_ne!(thumb(&h).unwrap(), reopened);
     }
 
     /// Renaming belongs to one document: snapshot ids restart in each, so switching tabs must not
