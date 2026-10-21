@@ -1335,7 +1335,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         let mut turn = false;
                         let mut ratio_base = None;
                         if o.crop_ratio == crate::crop_size::WHR {
-                            crate::crop_size::fields(o, ui);
+                            // ⇄ turns the frame with W and H, as with a ratio.
+                            turn = crate::crop_size::fields(o, ui);
                         } else {
                             // Keep partial edits in ToolOptions so the first side survives a frame;
                             // Original Ratio shows the document's numbers, as Photoshop does.

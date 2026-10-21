@@ -2117,6 +2117,37 @@ mod tests {
         assert!(near(h.state().ui.crop_rect, [60.0, 27.5, 140.0, 72.5]), "and back: {:?}", h.state().ui.crop_rect);
     }
 
+    /// With W x H x Resolution the bar's ⇄ swaps W and H and turns the frame with them, as X
+    /// does, instead of fitting the turned size inside the old frame.
+    #[test]
+    fn the_swap_button_turns_a_size_preset_frame() {
+        use egui_kittest::kittest::Queryable;
+        let whr = |a: &mut PhotocraftApp| {
+            let o = &mut a.ui.tool_options;
+            (o.crop_width, o.crop_height, o.crop_resolution) = ("1600 px".into(), "900 px".into(), "72".into());
+        };
+        let mut a = app(SampleType::U8);
+        whr(&mut a);
+        let mut h = swap_button_harness(a, crate::crop_size::WHR, [60.0, 27.5, 140.0, 72.5]);
+        let near = |a: Option<[f64; 4]>, b: [f64; 4]| a.is_some_and(|a| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9));
+        h.get_by_label("Swaps height and width").click();
+        h.run_steps(2);
+        let o = &h.state().ui.tool_options;
+        assert_eq!((o.crop_ratio.as_str(), o.crop_width.as_str(), o.crop_height.as_str()), (crate::crop_size::WHR, "900 px", "1600 px"));
+        assert!(near(h.state().ui.crop_rect, [77.5, 10.0, 122.5, 90.0]), "45 x 80, not shrunk: {:?}", h.state().ui.crop_rect);
+        h.get_by_label("Swaps height and width").click();
+        h.run_steps(2);
+        assert!(near(h.state().ui.crop_rect, [60.0, 27.5, 140.0, 72.5]), "and back: {:?}", h.state().ui.crop_rect);
+        // X does the same.
+        let mut a = app(SampleType::U8);
+        whr(&mut a);
+        a.ui.tool_options.crop_ratio = crate::crop_size::WHR.into();
+        a.ui.crop_rect = Some([60.0, 27.5, 140.0, 72.5]);
+        assert!(swap_orientation(&mut a));
+        assert_eq!((a.ui.tool_options.crop_width.as_str(), a.ui.tool_options.crop_height.as_str()), ("900 px", "1600 px"));
+        assert!(near(a.ui.crop_rect, [77.5, 10.0, 122.5, 90.0]), "X: 45 x 80, not shrunk: {:?}", a.ui.crop_rect);
+    }
+
     /// A square default frame doesn't turn, so ⇄ leaves it untouched: not edited, and leaving the
     /// tool drops it instead of cropping.
     #[test]
