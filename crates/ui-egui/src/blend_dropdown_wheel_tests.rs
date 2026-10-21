@@ -212,3 +212,32 @@ fn a_wheel_step_ends_the_hover_preview_until_the_pointer_moves() {
     h.run_steps(3);
     assert_eq!(previewed(&mut h), Some(BlendMode::Multiply), "a moved pointer previews again");
 }
+
+/// The open list's rect (the one foreground area: no other popup is open).
+fn open_list(h: &Harness<'_, PhotocraftApp>) -> Option<Rect> {
+    h.ctx.memory(|m| m.layer_ids().filter(|l| l.order == egui::Order::Foreground).find_map(|l| m.area_rect(l.id)))
+}
+
+/// A plain click on the Layers panel's Blend Mode box, released where it was pressed (after one
+/// frame, or after a few as a person's click takes), opens the list beside the box and chooses
+/// nothing (#5495 review): the full-height list doesn't fit below the box low in the panel, and
+/// it must not open over the box, where the release would pick the row under the pointer.
+#[test]
+fn a_click_on_the_blend_mode_box_opens_the_list_beside_it_and_changes_nothing() {
+    for held in [6, 1] {
+        let mut h = harness(pixel_layer);
+        let undo = steps(&h);
+        let button = dropdown(&h);
+        let at = button.center();
+        h.hover_at(at);
+        h.run_steps(1);
+        for (pressed, frames) in [(true, held), (false, 4)] {
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            h.run_steps(frames);
+        }
+        assert_eq!((blend(&h), steps(&h)), (BlendMode::Normal, undo), "held {held}: the click chose nothing");
+        let Some(list) = open_list(&h) else { panic!("held {held}: the list is open") };
+        assert!(!list.intersects(button.shrink(1.0)), "held {held}: the list {list:?} leaves the box {button:?} free");
+        assert!(list.top() >= 0.0 && list.bottom() <= 900.0, "held {held}: the list {list:?} is in the window");
+    }
+}
