@@ -349,6 +349,26 @@ pub(crate) fn translate_doc(doc: &mut Document, cmd: &str, dx: i32, dy: i32) -> 
     Ok(())
 }
 
+/// Delete Cropped Pixels on a layer tree: crops pixel-layer data only to `r`. Type and smart
+/// objects move by shifting their rendered pixels, so cutting those would clip them at the old
+/// edge. A video layer's stored frames are its pixels too: the displayed content is only the frame
+/// at the playhead, so the others would bring the cropped pixels back when scrubbing (#4956).
+fn delete_cropped_pixels(layers: &mut [Layer], r: Rect) {
+    for_each_layer(layers, &mut |l| {
+        if let Some(fc) = &mut l.fill_cache {
+            fc.surface = crop_surface(&fc.surface, r);
+        }
+        if let Some(v) = &mut l.video {
+            for frame in v.frames.iter_mut().chain(v.original_frames.iter_mut().flatten()) {
+                *frame = crop_surface(frame, r);
+            }
+        }
+        if let LayerContent::Raster(s) = &mut l.content {
+            *s = crop_surface(s, r);
+        }
+    });
+}
+
 /// Crops the document to `r` (in current document coordinates).
 /// A frame that extends past the canvas fills the Background's new area with `extension` (the
 /// background colour, as Photoshop's Crop tool does); other layers get transparent pixels there.
@@ -359,24 +379,8 @@ fn crop_doc(doc: &mut Document, cmd: &str, r: Rect, delete_pixels: bool, extensi
     };
     let old_canvas = doc.bounds();
     let extends = r.x0 < old_canvas.x0 || r.y0 < old_canvas.y0 || r.x1 > old_canvas.x1 || r.y1 > old_canvas.y1;
-    // Delete Cropped Pixels deletes pixel-layer data only: type and smart objects move by
-    // shifting their rendered pixels, so cutting those would clip them at the old edge. A video
-    // layer's stored frames are its pixels too: the displayed content is only the frame at the
-    // playhead, so the others would bring the cropped pixels back when scrubbing (#4956).
     if delete_pixels {
-        for_each_layer(&mut doc.layers, &mut |l| {
-            if let Some(fc) = &mut l.fill_cache {
-                fc.surface = crop_surface(&fc.surface, r);
-            }
-            if let Some(v) = &mut l.video {
-                for frame in v.frames.iter_mut().chain(v.original_frames.iter_mut().flatten()) {
-                    *frame = crop_surface(frame, r);
-                }
-            }
-            if let LayerContent::Raster(s) = &mut l.content {
-                *s = crop_surface(s, r);
-            }
-        });
+        delete_cropped_pixels(&mut doc.layers, r);
     }
     translate_doc(doc, cmd, dx, dy)?;
     doc.size = Size::new(r.width(), r.height());
@@ -747,7 +751,14 @@ fn rotated_crop(s: &mut Session, r: Rect, angle: f64, delete: bool, content_awar
         if delete {
             let keep = turned_crop_source(size, new, angle, target);
             s.edit("Crop", |doc, _| {
-                for_each_surface(&mut doc.layers, true, &mut |surf, _| *surf = crop_surface(surf, keep));
+                // Type and smart objects stay whole, as in the crop itself: the rotation re-renders
+                // them, but a smart object whose source is unavailable keeps its cache.
+                delete_cropped_pixels(&mut doc.layers, keep);
+                for_each_layer(&mut doc.layers, &mut |l| {
+                    if let Some(m) = &mut l.mask {
+                        m.surface = crop_surface(&m.surface, keep);
+                    }
+                });
                 for ch in doc.channels.iter_mut().chain(doc.quick_mask.as_mut()) {
                     ch.surface = crop_surface(&ch.surface, keep);
                 }
@@ -1433,6 +1444,36 @@ mod tests {
         s.execute("image.crop", json!({"x": 15, "y": 0, "width": 25, "height": 20})).unwrap();
         assert!(matches!(doc(&s).layers[1].content, LayerContent::Smart(_)) && matches!(doc(&s).layers[2].content, LayerContent::Text(_)));
         assert_eq!(bounds(&s), before.iter().map(|b| b.translate(-15, 0)).collect::<Vec<_>>());
+    }
+
+    /// A turned crop deleting pixels keeps type and smart objects whole too, also a smart object
+    /// whose source is unavailable (the rotation can't re-render it, so it keeps its cache): each
+    /// ends up exactly as the same turned crop with Delete Cropped Pixels off leaves it.
+    #[test]
+    fn turned_crop_deleting_pixels_keeps_type_and_smart_objects_whole() {
+        let [deleted, kept] = [true, false].map(|delete| {
+            let mut s = session();
+            s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+            s.edit("unlink", |doc, active| {
+                if let LayerContent::Smart(sm) = &mut doc.layer_mut(active.unwrap()).unwrap().content {
+                    sm.source = photocraft_doc::SmartSource::Linked { path: "missing-photocraft-test-source.psd".into() };
+                }
+                Ok(())
+            })
+            .unwrap();
+            s.execute("type.create", json!({"x": 10, "y": 15, "text": "Hi", "size": 12})).unwrap();
+            s.execute("image.crop", json!({"x": 20, "y": 0, "width": 20, "height": 20, "angle": 2.0, "deleteCroppedPixels": delete})).unwrap();
+            s
+        });
+        let (a, b) = (doc(&deleted), doc(&kept));
+        assert!(matches!(a.layers[1].content, LayerContent::Smart(_)) && matches!(a.layers[2].content, LayerContent::Text(_)));
+        for i in [1, 2] {
+            let (sa, sb) = (a.layers[i].surface().unwrap(), b.layers[i].surface().unwrap());
+            let r = sb.content_bounds();
+            assert!(r.x0 < 0, "layer {i} reaches past the crop's left edge: {r:?}");
+            assert_eq!(sa.content_bounds(), r, "layer {i}");
+            assert_eq!(sa.read_region(r), sb.read_region(r), "layer {i}");
+        }
     }
 
     /// The Background keeps the pixels a crop with Delete Cropped Pixels off hid: extending the
