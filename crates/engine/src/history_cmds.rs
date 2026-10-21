@@ -516,9 +516,6 @@ mod tests {
     #[test]
     fn purging_histories_frees_only_what_no_snapshot_keeps() {
         let mut s = session();
-        // Only the snapshot taken here: the first snapshot (the document as opened) would keep
-        // tiles of the oldest states too.
-        s.execute("history.deleteSnapshot", json!({"snapshot": 0})).unwrap();
         s.execute("history.newSnapshot", json!({})).unwrap();
         s.execute("edit.fill", json!({"color": "#0000ff"})).unwrap();
         let st = s.active().unwrap();

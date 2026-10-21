@@ -3670,9 +3670,6 @@ curves	Smooth	Làm mượt
 	set in Print Settings…	đặt trong thiết lập in…
 	ICO is limited to 256 × 256 pixels	ICO giới hạn ở 256 × 256 pixel
 # History panel › History Options… (#2966)
-	History Options…	Tùy chọn lịch sử…
-	Allow Non-Linear History	Cho phép lịch sử không tuyến tính
-	Make Layer Visibility Changes Undoable	Cho phép hoàn tác thay đổi hiển thị lớp
 	Automatically Create First Snapshot	Tự động tạo ảnh chụp trạng thái đầu tiên
 	Automatically Create New Snapshot When Saving	Tự động tạo ảnh chụp trạng thái mới khi lưu
 	Show New Snapshot Dialog by Default	Mặc định hiện hộp thoại Ảnh chụp trạng thái mới

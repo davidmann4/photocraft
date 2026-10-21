@@ -553,6 +553,33 @@ mod tests {
         assert_eq!(crate::inspect::session(&s)["historyOptions"]["showNewSnapshotDialogByDefault"], json!(true));
     }
 
+    /// The first snapshot and a save snapshot are recorded steps like any other: with Make Layer
+    /// Visibility Changes Undoable off, selecting one that shows a layer the eye hid, then Undo,
+    /// hides the layer again, and Redo shows it (the step changed it, #3535's rule).
+    #[test]
+    fn selecting_a_snapshot_undoes_its_own_visibility_change() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 16, "height": 16})).unwrap();
+        let id = s.active().unwrap().active_layer.unwrap().0;
+        // Red, not the white document as opened (`red` only reads the red channel).
+        let red = |s: &Session| s.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().surface().unwrap().pixel(1, 1)[1] < 0.5;
+        s.execute(CMD, json!({"makeLayerVisibilityChangesUndoable": false, "automaticallyCreateNewSnapshotWhenSaving": true})).unwrap();
+        s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        s.active_mut().unwrap().saved_to("saved.psd".into());
+        let saved = snapshot_on_save(&mut s).unwrap();
+        // The eye hides the layer: no state.
+        s.execute("layer.setProps", json!({"layer": id, "visible": false})).unwrap();
+        for (snap, is_red) in [(0, false), (saved, true)] {
+            s.execute("history.selectSnapshot", json!({"snapshot": snap})).unwrap();
+            assert!(visible(&s, id) && red(&s) == is_red, "snapshot {snap} shows the layer as it was");
+            s.execute("edit.undo", json!({})).unwrap();
+            assert!(!visible(&s, id) && red(&s), "undoing snapshot {snap} hides the layer again");
+            s.execute("edit.redo", json!({})).unwrap();
+            assert!(visible(&s, id) && red(&s) == is_red, "redoing snapshot {snap} shows it");
+            s.execute("edit.undo", json!({})).unwrap();
+        }
+    }
+
     /// With the oldest state current, non-linear Delete is still enabled for a later (dimmed)
     /// state (the History panel's trash and its drop target ask for it); linear history has
     /// nothing to delete there.
