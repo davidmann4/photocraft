@@ -381,13 +381,19 @@ fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                 // Without resampling the pixel count is fixed: physical size follows resolution.
                 f.insert("width".into(), json!(ow));
                 f.insert("height".into(), json!(oh));
-            } else if !matches!(unit.as_str(), "px" | "percent") {
+            } else {
                 // Resampling in a physical unit keeps the print size: the pixels follow the
-                // resolution (Photoshop). In pixels or percent the pixel count stays.
+                // resolution (Photoshop). In pixels or percent the pixel count stays. Each field
+                // has its own unit (Width can be Columns, a physical unit, beside Height in
+                // pixels); with Constrain Proportions on, one physical side scales both.
+                let physical = |key: &str| !matches!(field_unit(f, key).as_str(), "px" | "percent");
+                let (pw, ph) = (physical("width"), physical("height"));
                 let old = f.get("resolution").and_then(Value::as_f64).unwrap_or(num(f, "__origRes"));
                 if old > 0.0 && old.is_finite() {
-                    for key in ["width", "height"] {
-                        f.insert(key.into(), json!((num(f, key) * r / old).max(1.0)));
+                    for (key, scale) in [("width", pw || (constrain && ph)), ("height", ph || (constrain && pw))] {
+                        if scale {
+                            f.insert(key.into(), json!((num(f, key) * r / old).max(1.0)));
+                        }
                     }
                 }
             }
@@ -919,6 +925,35 @@ mod tests {
             crate::dialogs::confirm(h.state_mut(), id).unwrap();
             let doc = &h.state().session.active().unwrap().doc;
             assert_eq!((doc.size, doc.resolution_dpi), (photocraft_doc::Size::new(size.0 as u32, size.1 as u32), 300.0), "{unit}");
+        }
+    }
+
+    /// #6979 with #6214's per-field units: Width in Columns (physical) beside Height in pixels.
+    /// A new Resolution with Resample on keeps the print width; linked, the height follows the
+    /// proportions, unlinked it keeps its pixels. 372 x 300 px at 72 ppi is 2 columns (the default
+    /// 180 pt columns, 12 pt gutter) wide; at 300 ppi 2 columns are 1550 px.
+    #[test]
+    fn resample_on_resolution_with_width_in_columns() {
+        for (constrain, size) in [(true, (1550.0, 1250.0)), (false, (1550.0, 300.0))] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.session.execute("file.new", json!({"width": 372, "height": 300, "resolution": 72})).unwrap();
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1400.0, 900.0))
+                .build_ui_state(|ui, app: &mut PhotocraftApp| crate::dialogs::show(app, ui.ctx()), app);
+            PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+            let id = open(h.state_mut(), "image.imageSize").unwrap();
+            let d = h.state_mut().ui.dialog_mut(id).unwrap();
+            d.fields.insert("resample".into(), json!("bicubic"));
+            d.fields.insert("__unit".into(), json!("px"));
+            d.fields.insert("__constrain".into(), json!(constrain));
+            set_unit(&mut d.fields, "width", "col");
+            h.run_steps(3);
+            type_into(&mut h, 2, "300");
+            let f = fields(&h);
+            assert_eq!((num(&f, "width"), num(&f, "height"), num(&f, "resolution")), (size.0, size.1, 300.0), "constrain {constrain}: {f:?}");
+            crate::dialogs::confirm(h.state_mut(), id).unwrap();
+            let doc = &h.state().session.active().unwrap().doc;
+            assert_eq!(doc.size, photocraft_doc::Size::new(size.0 as u32, size.1 as u32), "constrain {constrain}");
         }
     }
 
