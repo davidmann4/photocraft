@@ -41,18 +41,35 @@ pub(crate) struct Coverage {
     /// The filled layer's pixels before the crop (original document px), set by [`Coverage::holding`]:
     /// where they lie past the old canvas they are hidden image, not uncovered area.
     pub held: Option<Surface>,
+    /// Where on the cropped canvas the crop left the held pixels as they were (`None`: everywhere).
+    /// An extending crop repaints the Background past this with the background colour, so what was
+    /// held there is gone and is filled like any uncovered area; set by [`Coverage::kept`].
+    pub kept: Option<Rect>,
 }
 
 impl Coverage {
     /// An unrotated crop to `r` (original document px).
     pub fn crop(r: Rect, width: u32, height: u32) -> Self {
-        Coverage { map: [1.0, 0.0, 0.0, 1.0, f64::from(r.x0), f64::from(r.y0)], width: f64::from(width), height: f64::from(height), rotated: false, held: None }
+        Coverage {
+            map: [1.0, 0.0, 0.0, 1.0, f64::from(r.x0), f64::from(r.y0)],
+            width: f64::from(width),
+            height: f64::from(height),
+            rotated: false,
+            held: None,
+            kept: None,
+        }
     }
 
     /// Takes the pixels of the layer the fill will go to from `doc` before it is cropped (the
     /// surface is shared, not copied), so hidden pixels past the old canvas count as covered.
     pub fn holding(mut self, doc: &Document, active: Option<LayerId>) -> Self {
         self.held = target_layer(doc, active).ok().and_then(|id| doc.layer(id)).and_then(|l| l.surface()).cloned();
+        self
+    }
+
+    /// Limits the held pixels to `kept` (cropped canvas px), what the crop didn't repaint.
+    pub fn kept(mut self, kept: Option<Rect>) -> Self {
+        self.kept = kept;
         self
     }
 
@@ -64,7 +81,25 @@ impl Coverage {
         let [a, b, c, d, e, f] = self.map;
         let (cu, cv) = (f64::from(u) + 0.5, f64::from(v) + 0.5);
         let (x, y) = (a * cu + b * cv + e, c * cu + d * cv + f);
-        (x >= margin && y >= margin && x <= self.width - margin && y <= self.height - margin) || self.holds(x, y)
+        if x >= margin && y >= margin && x <= self.width - margin && y <= self.height - margin {
+            return true;
+        }
+        if !self.kept.is_none_or(|k| k.contains(u, v)) || !self.holds(x, y) {
+            return false;
+        }
+        // Inside the old canvas (a rotated crop's edge ring) held pixels only count where the image
+        // goes on past the edge: else the ring was blended with the background colour, refill it.
+        let out = |p: f64, len: f64| {
+            if p < margin {
+                -0.5
+            } else if p > len - margin {
+                len + 0.5
+            } else {
+                p
+            }
+        };
+        let past = x < 0.0 || y < 0.0 || x > self.width || y > self.height;
+        past || self.holds(out(x, self.width), out(y, self.height))
     }
 
     /// Whether the layer held an image pixel at original document point (x, y) past the canvas
@@ -246,5 +281,30 @@ mod tests {
         assert!(c.covered(2, 0, m), "x = 0");
         assert!(c.covered(6, 0, m), "x = 4");
         assert!(!c.covered(7, 0, m), "x = 5");
+    }
+
+    /// A rotated crop's antialiased edge ring inside the old canvas is refilled unless the layer
+    /// held image past that edge, and an area the crop repainted (outside `kept`) is filled
+    /// although the layer held an image there before.
+    #[test]
+    fn held_pixels_count_past_the_canvas_where_kept() {
+        let rgba = photocraft_color::PixelFormat::RGBA8;
+        let mut canvas_only = Surface::new(rgba);
+        canvas_only.fill_rect(Rect::new(0, 0, 8, 8), &[1.0, 0.0, 0.0, 1.0]);
+        let mut surf = Surface::new(rgba);
+        surf.fill_rect(Rect::new(-8, -8, 16, 16), &[1.0, 0.0, 0.0, 1.0]);
+        let ring =
+            |held: &Surface| Coverage { map: [1.0, 0.0, 0.0, 1.0, -0.25, 0.0], width: 8.0, height: 8.0, rotated: true, held: Some(held.clone()), kept: None };
+        let m = ring(&surf).margin();
+        for u in [0, 1] {
+            assert!(!ring(&canvas_only).covered(u, 4, m), "x = {u}.25 is the edge ring, nothing past it");
+            assert!(ring(&surf).covered(u, 4, m), "x = {u}.25: the image goes on past the edge");
+        }
+        let c = Coverage::crop(Rect::new(-4, 0, 8, 8), 8, 8);
+        let held = Coverage { held: Some(surf), ..c };
+        let m = held.margin();
+        assert!(held.covered(1, 0, m), "x = -2.5 is held");
+        let repainted = held.kept(Some(Rect::new(4, 0, 12, 8)));
+        assert!(!repainted.covered(1, 0, m), "x = -2.5 was repainted by the crop");
     }
 }

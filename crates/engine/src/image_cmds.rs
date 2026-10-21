@@ -340,13 +340,16 @@ pub(crate) fn translate_doc(doc: &mut Document, cmd: &str, dx: i32, dy: i32) -> 
 /// Crops the document to `r` (in current document coordinates).
 /// A frame that extends past the canvas fills the Background's new area with `extension` (the
 /// background colour, as Photoshop's Crop tool does); other layers get transparent pixels there.
-fn crop_doc(doc: &mut Document, cmd: &str, r: Rect, delete_pixels: bool, extension: [f32; 4]) -> Result<()> {
+/// Returns the area of the new canvas whose Background pixels it kept when it repainted the rest
+/// (`None`: nothing repainted).
+fn crop_doc(doc: &mut Document, cmd: &str, r: Rect, delete_pixels: bool, extension: [f32; 4]) -> Result<Option<Rect>> {
     // The origin moves to (0, 0); `-i32::MIN` has no i32 value (#959).
     let (Some(dx), Some(dy)) = (r.x0.checked_neg(), r.y0.checked_neg()) else {
         return Err(bad(cmd, format!("the crop origin ({}, {}) can't be moved to (0, 0) within the 32-bit coordinate range", r.x0, r.y0)));
     };
     let old_canvas = doc.bounds();
     let extends = r.x0 < old_canvas.x0 || r.y0 < old_canvas.y0 || r.x1 > old_canvas.x1 || r.y1 > old_canvas.y1;
+    let mut kept = None;
     if delete_pixels {
         for_each_surface(&mut doc.layers, false, &mut |surf, _| *surf = crop_surface(surf, r));
     }
@@ -367,12 +370,13 @@ fn crop_doc(doc: &mut Document, cmd: &str, r: Rect, delete_pixels: bool, extensi
         if !keep.is_empty() {
             surf.write_interleaved(keep, &saved);
         }
+        kept = Some(keep);
     }
     if extends {
         drop_fill_caches(&mut doc.layers);
     }
     crate::canvas_geom::refresh(doc, crate::canvas_geom::Refresh::Shapes);
-    Ok(())
+    Ok(kept)
 }
 
 /// The nine documented canvas-size anchors, in the order the command lists them, each mapped to
@@ -523,9 +527,9 @@ fn crop(s: &mut Session, p: &Value) -> Result<Value> {
         let original = doc.size;
         // Taken before the crop: the pixels a Delete Cropped Pixels off crop hid count as image (#8060).
         let coverage = content_aware.then(|| crate::crop_fill::Coverage::crop(r, original.width, original.height).holding(doc, *active));
-        crop_doc(doc, "image.crop", r, delete, extension)?;
-        if let Some(coverage) = &coverage {
-            crate::crop_fill::fill_uncovered(doc, *active, coverage)?;
+        let kept = crop_doc(doc, "image.crop", r, delete, extension)?;
+        if let Some(coverage) = coverage {
+            crate::crop_fill::fill_uncovered(doc, *active, &coverage.kept(kept))?;
         }
         doc.selection = None;
         target.apply(doc);
@@ -669,6 +673,7 @@ fn rotated_crop(s: &mut Session, r: Rect, angle: f64, delete: bool, content_awar
         height: f64::from(size.height),
         rotated: true,
         held: None,
+        kept: None,
     };
     // The pixels before the turn: a Delete Cropped Pixels off crop's hidden ones count as image (#8060).
     let coverage = if content_aware {
@@ -698,9 +703,9 @@ fn rotated_crop(s: &mut Session, r: Rect, angle: f64, delete: bool, content_awar
         s.set_sampler_map(photocraft_geom::Affine::translate(-f64::from(target.x0), -f64::from(target.y0)));
         let extension = s.tools.background;
         s.edit("Crop", |doc, active| {
-            crop_doc(doc, CMD, target, delete, extension)?;
+            let kept = crop_doc(doc, CMD, target, delete, extension)?;
             if content_aware {
-                crate::crop_fill::fill_uncovered(doc, *active, &coverage)?;
+                crate::crop_fill::fill_uncovered(doc, *active, &coverage.kept(kept))?;
             }
             doc.selection = None;
             crop_target.apply(doc);
@@ -765,7 +770,7 @@ fn trim(s: &mut Session, p: &Value) -> Result<Value> {
     );
     s.set_sampler_map(photocraft_geom::Affine::translate(-f64::from(r.x0), -f64::from(r.y0)));
     let extension = s.tools.background;
-    s.edit("Trim", |doc, _| crop_doc(doc, "image.trim", r, true, extension))?;
+    s.edit("Trim", |doc, _| crop_doc(doc, "image.trim", r, true, extension).map(drop))?;
     Ok(json!({ "x": r.x0, "y": r.y0, "width": r.width(), "height": r.height() }))
 }
 

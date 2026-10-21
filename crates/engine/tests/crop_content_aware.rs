@@ -215,3 +215,21 @@ fn rotated_crop_keeps_the_hidden_pixels() {
     }
     assert!(red >= 100, "the hidden red shows in the turned frame: {red} red pixels");
 }
+
+/// On a Background, a crop that reaches past the old canvas paints the background colour over what
+/// it doesn't keep (the hidden pixels too). The fill then treats that area as uncovered and fills
+/// it, as before #8060's fix, instead of leaving a flat background-colour strip.
+#[test]
+fn extending_crop_fills_the_background_pixels_it_repainted() {
+    for delete in [false, true] {
+        let mut s = hidden_red("white");
+        crop(&mut s, json!({"x": -24, "y": 0, "width": 72, "height": 48, "deleteCroppedPixels": delete}), true).unwrap();
+        let surf = layer(&s);
+        for y in 0..48 {
+            for x in 0..24 {
+                let px = surf.rgba(x, y);
+                assert!(px[3] > 0.99 && !close(px, [0.0, 0.0, 0.0, 1.0], 0.06), "delete {delete}: ({x}, {y}) is the background colour: {px:?}");
+            }
+        }
+    }
+}
