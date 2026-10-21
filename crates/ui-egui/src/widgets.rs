@@ -1,4 +1,4 @@
-//! Custom widgets for the Photocraft look: cards with pill tabs, thin sliders with round knobs,
+//! Custom widgets for the PhotoCraft look: cards with pill tabs, thin sliders with round knobs,
 //! monospace value fields with dimmed units, toggle switches, primary/secondary buttons.
 
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
@@ -350,6 +350,25 @@ pub fn value_field_units(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInc
     value_field_in(ui, value, range, "", width, 0.0, FieldOpts { decimals: Some(decimals), units: Some(units), ..Default::default() }).0
 }
 
+/// A [`value_field_prec`] in `units` whose 100 % is a length of `extent` px (Free Transform's W
+/// and H): a length typed while it shows percent becomes that share of `extent` (`40px`, `2in`),
+/// and a percentage typed while it shows a length becomes that share of `extent` (`50%`), at
+/// `units`' resolution (#6284). The field keeps its own unit.
+#[allow(clippy::too_many_arguments)]
+pub fn value_field_extent(
+    ui: &mut Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    width: f32,
+    decimals: u32,
+    units: FieldUnits,
+    extent: f64,
+) -> Response {
+    let opts = FieldOpts { decimals: Some(decimals), units: Some(units), extent: Some(extent), ..Default::default() };
+    value_field_in(ui, value, range, suffix, width, 0.0, opts).0
+}
+
 fn field_resolution_id() -> egui::Id {
     egui::Id::new("pc-field-resolution")
 }
@@ -499,6 +518,8 @@ struct FieldOpts {
     decimals: Option<u32>,
     /// The unit typed units convert into (default: the suffix's, at [`set_field_resolution`]).
     units: Option<FieldUnits>,
+    /// The length (px) 100 % stands for, so lengths and percentages convert into each other.
+    extent: Option<f64>,
     wrap_drag: bool,
 }
 
@@ -526,7 +547,7 @@ fn value_field_box(
     trailing: f32,
     opts: FieldOpts,
 ) -> (Response, Rect) {
-    let FieldOpts { decimals, units, wrap_drag } = opts;
+    let FieldOpts { decimals, units, extent, wrap_drag } = opts;
     let t = Tokens::get(ui.ctx());
     let (rect, slot) = ui.allocate_exact_size(size, Sense::hover());
     let scrub = take_label_scrub(ui, rect).map(|s| {
@@ -544,8 +565,8 @@ fn value_field_box(
     // Typed text loses its spaces before parsing, so a " pt" suffix reads as "pt".
     let typed_suffix = suffix.trim();
     let units = match units {
-        Some(u) => crate::numeric_expression::Units { unit: Some(u.unit), suffix: typed_suffix, dpi: u.dpi, ppi: u.ppi },
-        None => crate::numeric_expression::Units { unit: unit_of_suffix(typed_suffix), suffix: typed_suffix, dpi, ppi },
+        Some(u) => crate::numeric_expression::Units { unit: Some(u.unit), suffix: typed_suffix, dpi: u.dpi, ppi: u.ppi, extent },
+        None => crate::numeric_expression::Units { unit: unit_of_suffix(typed_suffix), suffix: typed_suffix, dpi, ppi, extent },
     };
     surface(ui, rect, t.field, false);
     if !t.bevel {
@@ -793,6 +814,8 @@ pub fn focus_first_field(ctx: &egui::Context, on: bool) {
     });
 }
 
+const NUMERIC_INPUT_LIMIT: usize = 128;
+
 /// The number in a [`value_field`]. A typed number applies as it's typed; arithmetic waits for
 /// Enter, Tab or click-away, because per keystroke `5/2` would land first and a caller that
 /// rounds it would cut `5/2*2` short. `changed()` means a new value, not just a keystroke.
@@ -813,6 +836,25 @@ fn number_edit(
     // Tab in a dialog goes from one of these to the next (field_tab.rs).
     if ui.is_enabled() {
         crate::field_tab::register(&ctx, id);
+    }
+    // Use DragValue's focus check before it builds its TextEdit: oversized events must never
+    // reach text layout. Registering interest also handles focus arriving by Tab this frame.
+    let editing = ui.is_enabled()
+        && ui.memory_mut(|m| {
+            m.interested_in_focus(id, ui.layer_id());
+            m.has_focus(id)
+        });
+    if editing {
+        ui.input_mut(|input| {
+            input.events.retain(|event| {
+                let text = match event {
+                    egui::Event::Text(text) | egui::Event::Paste(text) | egui::Event::Ime(egui::ImeEvent::Commit(text)) => text,
+                    egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => text,
+                    _ => return true,
+                };
+                text.chars().nth(NUMERIC_INPUT_LIMIT).is_none()
+            });
+        });
     }
     let held = id.with("arithmetic");
     let math = ui.memory(|m| m.has_focus(id)) && ui.data(|d| d.get_temp(held)).unwrap_or(false);
@@ -837,6 +879,10 @@ fn number_edit(
             .update_while_editing(!math)
             // Focus is read when parsing, not above: Tab hands it on inside `ui.add`.
             .custom_parser(move |s| {
+                // Short events can accumulate: reject before either parser normalizes the text.
+                if s.chars().nth(NUMERIC_INPUT_LIMIT).is_some() {
+                    return None;
+                }
                 let v = parse_num_in(s, units);
                 if ctx.memory(|m| m.has_focus(id)) && plain(s).is_none() {
                     // Still typing arithmetic: hold it, and stop applying keystrokes once it parses.
@@ -901,6 +947,34 @@ pub struct RowGestures {
     /// Each wheel notch over the slider moves the value by this step (up = higher; ×10 with
     /// Shift). Photoshop does this in dialogs, not in the Properties panel.
     pub wheel_step: Option<f32>,
+    /// A curved track: the knob at fraction f of the track is `lo + (hi - lo) * f^k`, so small
+    /// values get fine steps (Photoshop's mask Feather, #6545). Typed, scrubbed and stepped
+    /// values stay linear; only the track maps through the curve.
+    pub curve: Option<f32>,
+}
+
+/// The value at fraction `f` of a track over `lo..=hi`, through `curve` (see [`RowGestures`]).
+pub(crate) fn curve_value(f: f32, lo: f32, hi: f32, curve: Option<f32>) -> f32 {
+    match curve {
+        Some(k) if k.is_finite() && k > 0.0 => lo + f.clamp(0.0, 1.0).powf(k) * (hi - lo),
+        _ => lo + f * (hi - lo),
+    }
+}
+
+/// Where `v` sits on a track over `lo..=hi`, as a fraction: the inverse of [`curve_value`].
+pub(crate) fn curve_fraction(v: f32, lo: f32, hi: f32, curve: Option<f32>) -> f32 {
+    let f = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+    match curve {
+        // An unset (NaN) value draws the knob at the start rather than nowhere.
+        Some(k) if k.is_finite() && k > 0.0 => {
+            if f.is_finite() {
+                f.powf(1.0 / k)
+            } else {
+                0.0
+            }
+        }
+        _ => f,
+    }
 }
 
 /// Wheel notches this frame while the pointer is over `resp` (Shift ×10). Wheel lines add up in
@@ -985,7 +1059,7 @@ fn slider_with(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32
         && (resp.dragged() || resp.clicked())
     {
         let f = ((p.x - track.left()) / track.width()).clamp(0.0, 1.0);
-        let nv = lo + f * (hi - lo);
+        let nv = curve_value(f, lo, hi, g.curve);
         if (nv - *value).abs() > f32::EPSILON {
             *value = nv;
             resp.mark_changed();
@@ -1008,7 +1082,7 @@ fn slider_with(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32
             }
         }
     }
-    let f = ((*value - lo) / (hi - lo)).clamp(0.0, 1.0);
+    let f = curve_fraction(*value, lo, hi, g.curve);
     let knob_x = track.left() + f * track.width();
     let painter = ui.painter();
     match gradient {
@@ -1193,15 +1267,23 @@ pub struct DialogButton<'a> {
     pub label: &'a str,
     pub min_width: f32,
     pub enabled: bool,
+    /// Take keyboard focus this frame (see [`DialogButton::focus`]).
+    pub focus: bool,
 }
 
 impl<'a> DialogButton<'a> {
     pub fn new(role: ButtonRole, label: &'a str, min_width: f32) -> Self {
-        Self { role, label, min_width, enabled: true }
+        Self { role, label, min_width, enabled: true, focus: false }
     }
 
     pub fn enabled(self, enabled: bool) -> Self {
         Self { enabled, ..self }
+    }
+
+    /// Asks for keyboard focus for this button: from there the arrow keys move between the row's
+    /// buttons and Enter or Space presses the focused one.
+    pub fn focus(self, focus: bool) -> Self {
+        Self { focus, ..self }
     }
 }
 
@@ -1225,6 +1307,9 @@ pub fn dialog_buttons(ui: &mut Ui, buttons: &[DialogButton]) -> Option<ButtonRol
                         if b.role == ButtonRole::Default { primary_button(ui, b.label, b.min_width) } else { secondary_button(ui, b.label, b.min_width) }
                     })
                     .inner;
+                if b.focus && b.enabled {
+                    r.request_focus();
+                }
                 if r.clicked() {
                     hit = Some(b.role);
                 }
@@ -1240,9 +1325,14 @@ fn button_size(ui: &Ui, label: &str, min_width: f32) -> Vec2 {
     button_layout(ui, label, min_width, None, Tokens::get(ui.ctx()).text).1
 }
 
+/// The height of a primary or secondary button (and so of a dialog's button row).
+pub fn button_height(ctx: &egui::Context) -> f32 {
+    if Tokens::get(ctx).pro { 28.0 } else { 30.0 }
+}
+
 fn button_layout(ui: &Ui, label: &str, min_width: f32, height: Option<f32>, fg: Color32) -> (std::sync::Arc<egui::Galley>, Vec2) {
     let galley = ui.painter().layout_no_wrap(tl!(label).to_owned(), theme::medium(13.0), fg);
-    let h = height.unwrap_or(if Tokens::get(ui.ctx()).pro { 28.0 } else { 30.0 });
+    let h = height.unwrap_or(button_height(ui.ctx()));
     let size = vec2((galley.size().x + 28.0).max(min_width), h);
     (galley, size)
 }
@@ -1572,30 +1662,27 @@ fn combo_box_arrow_keys<T: PartialEq + Clone>(ui: &mut Ui, response: &Response, 
 /// off the bottom. egui moves a popup up to keep it in the window, so a menu opened low on the
 /// screen first shifts up and only scrolls when it is taller than the window.
 pub fn menu_scroll<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
-    let room = popup_max_height(ui.ctx(), ui.spacing());
+    // The popup frame's margin and stroke, and a small gap to the window's edges.
+    let frame = ui.spacing().menu_margin.sum().y + 2.0 + 2.0 * MENU_EDGE;
+    let room = (crate::work_area::visible_rect(ui.ctx()).height() - frame).max(MENU_MIN_HEIGHT);
     // A popup's Ui is only as tall as the popup was last frame (400 pt on the first), so ask for
     // the whole room: the area still shrinks to its rows when they need less.
     egui::ScrollArea::vertical().max_height(room).min_scrolled_height(room).show(ui, add_contents).inner
 }
 
-/// The most a popup's rows may take: the part of the window that can be seen (clear of a taskbar a
-/// too-tall window runs under, #315), less the popup frame's margin and stroke and a small gap to
-/// the window's edges. egui moves a popup up to keep it in the window, so a popup this tall fits.
-pub fn popup_max_height(ctx: &egui::Context, spacing: &egui::style::Spacing) -> f32 {
-    let frame = spacing.menu_margin.sum().y + 2.0 + 2.0 * MENU_EDGE;
-    (crate::work_area::visible_rect(ctx).height() - frame).max(MENU_MIN_HEIGHT)
-}
-
 /// A dropdown: a button showing `selected_text` (at least `width` wide, wider for a longer text)
 /// whose list (`add_contents`) opens below it on a click. The list is as tall as its options up to
-/// the part of the window that can be seen, scrolling only past that (#5495): Photoshop's dropdowns
+/// the room the window has on that side, scrolling only past that (#5495): Photoshop's dropdowns
 /// open at full height. egui's `ComboBox` capped every list at the size its popup takes on the
 /// frame it opens (`default_area_size`, 400 pt), so the Layers panel's 27 blend modes scrolled.
 ///
-/// The list's left edge is the button's, and a list that doesn't fit below the button moves up
-/// over it to stay in the window, never beside it: so it stays put while its value (and with it
-/// the button's width) changes, as the wheel steps it over the open list (#1747). The ids are
-/// egui's `ComboBox` ones, so `ComboBox::is_open` and [`crate::press_menu::PressCombo`] apply.
+/// The list never covers its button, as in Photoshop: it opens below the button, or above it when
+/// the whole list doesn't fit below and there is more room above, and scrolls when it doesn't fit
+/// on that side either. Over the button, the release of the click that opened it would choose the
+/// row under the pointer. Its left edge is the button's and its side only depends on its rows'
+/// height, so it stays put while its value (and with it the button's width) changes, as the wheel
+/// steps it over the open list (#1747). The ids are egui's `ComboBox` ones, so
+/// `ComboBox::is_open` and [`crate::press_menu::PressCombo`] apply.
 pub fn combo_list<R>(
     ui: &mut Ui,
     id_salt: impl egui::AsIdSalt,
@@ -1617,16 +1704,21 @@ pub fn combo_list<R>(
             info.current_text_value = Some(selected_text.text().to_owned());
             info
         });
-        let room = popup_max_height(&ctx, ui.spacing());
-        // Below the button, or as far up as the list's height (from the last frame) needs.
+        // The room below and above the button, less the popup frame's margin and stroke. The
+        // rows' full height is measured on the (invisible) pass that sizes the list as it opens.
         let visible = crate::work_area::visible_rect(&ctx).shrink(MENU_EDGE);
-        let height = egui::AreaState::load(&ctx, popup_id).and_then(|s| s.size).map_or(0.0, |s| s.y);
-        let top = button.rect.bottom().min(visible.bottom() - height).max(visible.top());
-        let left = button.rect.left();
+        let frame = ui.spacing().menu_margin.sum().y + 2.0;
+        let below = visible.bottom() - button.rect.bottom() - frame;
+        let above = button.rect.top() - visible.top() - frame;
+        let rows_id = popup_id.with("rows");
+        let rows = ctx.data(|d| d.get_temp::<f32>(rows_id));
+        let up = rows.is_some_and(|rows| rows > below) && above > below;
+        let (align, room) = if up { (egui::RectAlign::TOP_START, above) } else { (egui::RectAlign::BOTTOM_START, below) };
+        let room = room.max(MENU_MIN_HEIGHT);
         let inner = egui::Popup::menu(&button)
             .id(popup_id)
-            .anchor(Rect::from_x_y_ranges(left..=left, top..=top))
-            .align(egui::RectAlign::BOTTOM_START)
+            .anchor(button.rect)
+            .align(align)
             .align_alternatives(&[])
             .width(button.rect.width())
             .close_behavior(close)
@@ -1635,15 +1727,14 @@ pub fn combo_list<R>(
                 ui.set_min_width(ui.available_width());
                 // A popup's Ui is only as tall as the popup was last frame (400 pt on the first),
                 // so ask for the whole room: the area still shrinks to its rows when they need less.
-                egui::ScrollArea::vertical()
-                    .max_height(room)
-                    .min_scrolled_height(room)
-                    .show(ui, |ui| {
-                        // Options don't wrap in a list as narrow as its button: they widen it.
-                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                        add_contents(ui)
-                    })
-                    .inner
+                let scroll = egui::ScrollArea::vertical().max_height(room).min_scrolled_height(room).show(ui, |ui| {
+                    // Options don't wrap in a list as narrow as its button: they widen it.
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    add_contents(ui)
+                });
+                let rows = scroll.content_size.y;
+                ui.ctx().data_mut(|d| d.insert_temp(rows_id, rows));
+                scroll.inner
             })
             .map(|r| r.inner);
         egui::InnerResponse::new(inner, button)
@@ -2185,6 +2276,28 @@ mod tests {
         assert_eq!(press(&mut h, Modifiers::SHIFT, Key::ArrowUp), 1000.0);
     }
 
+    /// #6545: a curved track (the mask Feather) has fine steps at the left and coarse ones toward
+    /// the right end, and the knob drawn for a value lands where that value is picked.
+    #[test]
+    fn curved_track_maps_ends_middle_and_round_trips() {
+        use super::{curve_fraction, curve_value};
+        for (f, want) in [(0.0, 0.0), (0.1, 1.0), (0.2, 8.0), (0.5, 125.0), (1.0, 1000.0)] {
+            assert!((curve_value(f, 0.0, 1000.0, Some(3.0)) - want).abs() < 1e-3, "{f}: {}", curve_value(f, 0.0, 1000.0, Some(3.0)));
+        }
+        assert_eq!(curve_value(0.25, 0.0, 1000.0, None), 250.0, "no curve is the linear track");
+        assert_eq!(curve_value(0.5, 10.0, 20.0, Some(3.0)), 11.25, "the curve starts at the range's low end");
+        for i in 0..=100 {
+            let f = i as f32 / 100.0;
+            let back = curve_fraction(curve_value(f, 0.0, 1000.0, Some(3.0)), 0.0, 1000.0, Some(3.0));
+            assert!((back - f).abs() < 1e-4, "{f} -> {back}");
+            let v = i as f32 * 10.0;
+            let again = curve_value(curve_fraction(v, 0.0, 1000.0, Some(3.0)), 0.0, 1000.0, Some(3.0));
+            assert!((again - v).abs() < 1e-3, "{v} -> {again}");
+        }
+        assert_eq!(curve_fraction(-5.0, 0.0, 1000.0, Some(3.0)), 0.0);
+        assert_eq!(curve_fraction(f32::NAN, 0.0, 1000.0, Some(3.0)), 0.0);
+    }
+
     #[test]
     fn arrow_keys_work_out_a_typed_sum_then_step_it() {
         let mut h = focused(100.0, 0.0..=1000.0);
@@ -2581,21 +2694,32 @@ mod tests {
         assert!(hi - lo < 1.0, "even row gaps: {gaps:?}");
     }
 
-    /// The open list opens at the button's left edge, below it or moved up over it to fit, and
-    /// stays put while the wheel steps through every mode over it (#1747), although the button
-    /// widens for the longer names (#5495).
+    /// The open list opens at the button's left edge, below the button or above it, never over it
+    /// (#5495 review: a click released in place would choose the row under the pointer): below
+    /// when the whole list fits there, else on the side with more room, scrolling when it doesn't
+    /// fit there either. It stays put while the wheel steps through every mode over it (#1747),
+    /// although the button widens for the longer names.
     #[test]
-    fn dropdown_list_stays_put_while_the_wheel_steps_its_value() {
+    fn dropdown_list_opens_beside_its_button_and_stays_put_while_the_wheel_steps_its_value() {
         use photocraft_color::BlendMode;
-        // A tall window with room below the button, and a 900 pt one with the button half way down.
-        for (height, down) in [(1000.0, 0.0), (900.0, 420.0)] {
+        // (window height, button's distance from the top, list below it, all modes in sight)
+        let cases = [
+            (1000.0, 0.0, true, true),    // room below
+            (900.0, 420.0, true, false),  // room on neither side, more below
+            (900.0, 520.0, false, false), // room on neither side, more above
+            (1000.0, 900.0, false, true), // room above only, near the bottom edge
+            (300.0, 150.0, false, false), // a window shorter than the list
+        ];
+        for (height, down, below, all) in cases {
             let mut h = open_blend_modes(height, down);
             let button = h.get_by_role(egui::accesskit::Role::ComboBox).rect();
             let list = open_list(&h);
-            assert!(list.top() >= 0.0 && list.bottom() <= height, "{height}: the list {list:?} is in the window");
-            assert!((list.left() - button.left()).abs() < 8.0, "{height}: the list {list:?} starts at the button {button:?}");
+            assert!(list.top() >= 0.0 && list.bottom() <= height, "{height}/{down}: the list {list:?} is in the window");
+            assert!((list.left() - button.left()).abs() < 8.0, "{height}/{down}: the list {list:?} starts at the button {button:?}");
+            assert!(!list.intersects(button.shrink(1.0)), "{height}/{down}: the list {list:?} leaves the button {button:?} free");
+            assert_eq!(list.top() >= button.bottom() - 1.0, below, "{height}/{down}: the list {list:?} is below the button {button:?}");
             let rows = mode_rows(&h);
-            assert!(rows.iter().all(|r| list.contains_rect(*r)), "{height}: all modes show in {list:?}");
+            assert_eq!(rows.iter().all(|r| list.contains_rect(*r)), all, "{height}/{down}: all modes show in {list:?}");
             let over = list.center();
             for _ in 1..BlendMode::LAYER_MODES.len() {
                 h.hover_at(over);
@@ -2606,10 +2730,65 @@ mod tests {
                     modifiers: Modifiers::NONE,
                 });
                 h.run_steps(3);
-                assert_eq!(open_list(&h), list, "{height}: the list stays put at {:?}", h.state());
+                assert_eq!(open_list(&h), list, "{height}/{down}: the list stays put at {:?}", h.state());
             }
-            assert_eq!(*h.state(), BlendMode::Luminosity, "{height}: the wheel stepped through every mode");
+            assert_eq!(*h.state(), BlendMode::Luminosity, "{height}/{down}: the wheel stepped through every mode");
         }
+    }
+
+    /// A short list opens below its button when it fits there, and above it near the window's
+    /// bottom edge, whole either way.
+    #[test]
+    fn a_short_dropdown_list_opens_below_or_above_its_button_whole() {
+        for (down, below) in [(100.0, true), (360.0, false)] {
+            let mut h = Harness::builder().with_size(egui::vec2(300.0, 400.0)).build_ui_state(
+                move |ui, selected: &mut usize| {
+                    ui.add_space(down);
+                    super::dropdown(ui, "blend-mode", selected, &MODES, 120.0);
+                },
+                0,
+            );
+            h.run();
+            h.get_by_role(egui::accesskit::Role::ComboBox).click();
+            h.run_steps(4);
+            let button = h.get_by_role(egui::accesskit::Role::ComboBox).rect();
+            let list = open_list(&h);
+            assert_eq!(list.top() >= button.bottom() - 1.0, below, "{down}: the list {list:?} is below the button {button:?}");
+            assert!(!list.intersects(button.shrink(1.0)), "{down}: the list {list:?} leaves the button {button:?} free");
+            for (_, label) in MODES {
+                let row = h.get_all_by_label(label).last().map(|n| n.rect()).unwrap_or(egui::Rect::NOTHING);
+                assert!(list.contains_rect(row), "{down}: {label} {row:?} shows in {list:?}");
+            }
+            assert!(list.height() < 150.0, "{down}: the list {list:?} is only as tall as its rows");
+            assert_eq!(*h.state(), 0, "{down}: the click chose nothing");
+        }
+    }
+
+    /// In a window too short for the list on either side the list still covers its button; the
+    /// release of the click that opened it, held a few frames, chooses nothing (#5495 review).
+    #[test]
+    fn the_release_of_the_opening_click_chooses_nothing_where_the_list_covers_the_button() {
+        use photocraft_color::BlendMode;
+        let mut h = Harness::builder().with_size(egui::vec2(400.0, 110.0)).build_ui_state(
+            |ui, mode: &mut BlendMode| {
+                ui.add_space(40.0);
+                let opts: Vec<(BlendMode, &str)> = BlendMode::LAYER_MODES.iter().map(|m| (*m, m.label())).collect();
+                super::dropdown_wheel_hovered(ui, "blend-mode", mode, &opts, 120.0);
+            },
+            BlendMode::Normal,
+        );
+        h.run();
+        let button = h.get_by_role(egui::accesskit::Role::ComboBox).rect();
+        let at = button.center();
+        h.hover_at(at);
+        h.run();
+        for (pressed, frames) in [(true, 6), (false, 4)] {
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+            h.run_steps(frames);
+        }
+        let list = open_list(&h);
+        assert!(list.contains(at), "the list {list:?} covers the button {button:?} here");
+        assert_eq!(*h.state(), BlendMode::Normal, "the click chose nothing");
     }
 
     const MODES: [(usize, &str); 4] = [(0, "Normal"), (1, "Dissolve"), (2, "Darken"), (3, "Multiply")];
@@ -2862,3 +3041,7 @@ mod screen_color_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "widgets/numeric_input_tests.rs"]
+mod numeric_input_tests;
