@@ -348,11 +348,18 @@ fn crop_doc(doc: &mut Document, cmd: &str, r: Rect, delete_pixels: bool, extensi
     let old_canvas = doc.bounds();
     let extends = r.x0 < old_canvas.x0 || r.y0 < old_canvas.y0 || r.x1 > old_canvas.x1 || r.y1 > old_canvas.y1;
     // Delete Cropped Pixels deletes pixel-layer data only: type and smart objects move by
-    // shifting their rendered pixels, so cutting those would clip them at the old edge.
+    // shifting their rendered pixels, so cutting those would clip them at the old edge. A video
+    // layer's stored frames are its pixels too: the displayed content is only the frame at the
+    // playhead, so the others would bring the cropped pixels back when scrubbing (#4956).
     if delete_pixels {
         for_each_layer(&mut doc.layers, &mut |l| {
             if let Some(fc) = &mut l.fill_cache {
                 fc.surface = crop_surface(&fc.surface, r);
+            }
+            if let Some(v) = &mut l.video {
+                for frame in v.frames.iter_mut().chain(v.original_frames.iter_mut().flatten()) {
+                    *frame = crop_surface(frame, r);
+                }
             }
             if let LayerContent::Raster(s) = &mut l.content {
                 *s = crop_surface(s, r);
@@ -1009,6 +1016,37 @@ mod tests {
         for frame in v.frames.iter().chain(v.original_frames.iter().flatten()) {
             assert_eq!(frame.pixel(20, 10), red);
             assert_eq!(frame.pixel(5, 5)[3], 0.0);
+        }
+    }
+
+    /// Delete Cropped Pixels on a shrinking crop deletes the cropped area from every stored video
+    /// frame (and the original footage), not just the displayed one (#4956).
+    #[test]
+    fn delete_cropped_pixels_crops_stored_video_frames() {
+        let mut s = session();
+        s.edit("video", |doc, active| {
+            let l = doc.layer_mut(active.unwrap()).unwrap();
+            let red = l.surface().unwrap().clone();
+            let mut blue = red.clone();
+            blue.fill_rect(Rect::new(0, 0, 40, 20), &[0.0, 0.0, 1.0, 1.0]);
+            let mut v = photocraft_doc::VideoData::new(vec![red.clone(), blue.clone()], 24.0);
+            v.original_frames = Some(vec![red, blue]);
+            l.video = Some(v);
+            Ok(())
+        })
+        .unwrap();
+        s.execute("image.crop", json!({"x": 15, "y": 0, "width": 25, "height": 20, "deleteCroppedPixels": true})).unwrap();
+        assert_eq!(doc(&s).size, Size::new(25, 20));
+        let v = doc(&s).layers[1].video.as_ref().unwrap();
+        let originals = v.original_frames.as_ref().unwrap();
+        assert_eq!((v.frames.len(), originals.len()), (2, 2));
+        for frames in [&v.frames, originals] {
+            // The red square (10..20, 5..15) keeps only its right half; the full blue frame
+            // keeps exactly the 25×20 crop.
+            assert_eq!(frames[0].content_bounds(), Rect::new(0, 5, 5, 15));
+            assert_eq!(frames[0].pixel(2, 10), vec![1.0, 0.0, 0.0, 1.0]);
+            assert_eq!(frames[1].content_bounds(), Rect::new(0, 0, 25, 20));
+            assert_eq!(frames[1].pixel(24, 19), vec![0.0, 0.0, 1.0, 1.0]);
         }
     }
 
