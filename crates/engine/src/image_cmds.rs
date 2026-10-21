@@ -361,11 +361,18 @@ fn crop_doc(doc: &mut Document, cmd: &str, r: Rect, delete_pixels: bool, extensi
         let old = old_canvas.translate(dx, dy);
         let fmt = surf.format();
         let px = photocraft_raster::from_rgba(&fmt, [extension[0], extension[1], extension[2], 1.0]);
+        let canvas = Rect::from_xywh(0, 0, r.width(), r.height());
         // Without Delete Cropped Pixels the Background still holds what earlier crops hid: growing
         // the frame again reveals it rather than painting the extension colour over it (#8060).
-        let keep = if delete_pixels { surf.content_bounds().intersect(&old) } else { surf.content_bounds() };
-        let saved = surf.to_interleaved(keep);
-        surf.fill_rect(Rect::from_xywh(0, 0, r.width(), r.height()), &px);
+        // Only the new canvas is saved (the fill leaves what lies beyond untouched), and as those
+        // pixels need not fill a rectangle, they are laid over the extension colour: a gap or a
+        // soft edge takes the colour instead of making the Background transparent.
+        let keep = surf.content_bounds().intersect(if delete_pixels { &old } else { &canvas });
+        let mut saved = surf.to_interleaved(keep);
+        if !delete_pixels {
+            matte_over(&fmt, &mut saved, &px);
+        }
+        surf.fill_rect(canvas, &px);
         if !keep.is_empty() {
             surf.write_interleaved(keep, &saved);
         }
@@ -375,6 +382,30 @@ fn crop_doc(doc: &mut Document, cmd: &str, r: Rect, delete_pixels: bool, extensi
     }
     crate::canvas_geom::refresh(doc, crate::canvas_geom::Refresh::Shapes);
     Ok(())
+}
+
+/// Lays interleaved `bytes` of `fmt` over the opaque pixel `under` (straight alpha), leaving
+/// them opaque; opaque pixels keep their exact bytes.
+fn matte_over(fmt: &photocraft_color::PixelFormat, bytes: &mut [u8], under: &[f32]) {
+    let n = fmt.mode.color_channels();
+    if !fmt.alpha {
+        return;
+    }
+    for chunk in bytes.chunks_exact_mut(fmt.bytes_per_pixel()) {
+        // Most pixels are opaque: check the alpha sample alone before decoding the pixel.
+        let a = photocraft_color::read_sample(chunk, fmt.sample, n).clamp(0.0, 1.0);
+        if a >= 1.0 {
+            continue;
+        }
+        let mut p = photocraft_raster::decode_pixel(fmt, chunk);
+        for (c, u) in p.iter_mut().zip(under).take(n) {
+            *c = *c * a + u * (1.0 - a);
+        }
+        if let Some(alpha) = p.get_mut(n) {
+            *alpha = 1.0;
+        }
+        photocraft_raster::encode_pixel(fmt, &p, chunk);
+    }
 }
 
 /// The nine documented canvas-size anchors, in the order the command lists them, each mapped to
@@ -1459,6 +1490,46 @@ mod tests {
             let bg = doc(&s).layers[0].surface().unwrap();
             assert_eq!(bg.rgba(0, 0), [1.0, 0.0, 1.0, 1.0], "{depth}: new canvas takes the background colour");
             assert_eq!(bg.rgba(11, 6), [0.0, 1.0, 0.0, 1.0], "{depth}");
+        }
+    }
+
+    /// #8060 follow-up: a non-deleting crop that hides the top-left and grows bottom-right leaves
+    /// the Background's pixels in an L shape; Reveal All (and any larger re-crop) must give the two
+    /// empty corners of that shape the background colour, never transparency, and a partly
+    /// transparent hidden pixel is flattened over it, as a Background has no transparency.
+    #[test]
+    fn revealing_a_non_rectangular_hidden_background_keeps_it_opaque() {
+        for (mode, depth) in [("rgb", 8), ("rgb", 16), ("rgb", 32), ("gray", 8), ("cmyk", 8), ("lab", 16)] {
+            let mut s = marked(mode, depth);
+            s.execute("tools.setColors", json!({"background": "#ff00ff"})).unwrap();
+            s.execute("image.crop", json!({"x": 10, "y": 10, "width": 40, "height": 20, "deleteCroppedPixels": false})).unwrap();
+            // A half-transparent pixel among the hidden ones, as Image Rotation leaves on edges.
+            s.edit("paint", |doc, _| {
+                let bg = doc.background_mut().unwrap().surface_mut().unwrap();
+                let fmt = bg.format();
+                bg.fill_rect(Rect::new(-10, -10, -9, -9), &photocraft_raster::from_rgba(&fmt, [0.0, 0.0, 0.0, 0.5]));
+                Ok(())
+            })
+            .unwrap();
+            s.execute("image.revealAll", json!({})).unwrap();
+            assert_eq!(doc(&s).size, Size::new(50, 30), "{mode} {depth}");
+            let bg = doc(&s).layers[0].surface().unwrap();
+            let magenta = bg.rgba(45, 5);
+            let white = bg.rgba(5, 5);
+            for (x, y) in [(45, 5), (49, 0), (40, 9), (5, 25), (0, 29), (9, 20)] {
+                assert_eq!(bg.rgba(x, y)[3], 1.0, "{mode} {depth}: ({x}, {y}) is opaque");
+                assert_eq!(bg.rgba(x, y), magenta, "{mode} {depth}: ({x}, {y}) takes the background colour");
+            }
+            assert_eq!(white[3], 1.0, "{mode} {depth}");
+            assert!(white[0] > 0.9 && white[1] > 0.9 && white[2] > 0.9, "{mode} {depth}: the hidden white comes back: {white:?}");
+            if mode == "rgb" {
+                assert_eq!(magenta, [1.0, 0.0, 1.0, 1.0], "{depth}");
+            }
+            let half = bg.rgba(0, 0);
+            assert_eq!(half[3], 1.0, "{mode} {depth}: the half-transparent pixel is flattened: {half:?}");
+            if mode == "rgb" {
+                assert!((half[0] - 0.5).abs() < 0.01 && half[1] < 0.01 && (half[2] - 0.5).abs() < 0.01, "{depth}: black at 50% over magenta: {half:?}");
+            }
         }
     }
 
