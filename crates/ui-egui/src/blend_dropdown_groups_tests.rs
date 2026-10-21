@@ -11,9 +11,10 @@ use serde_json::json;
 
 use crate::PhotocraftApp;
 
-/// The app with a new document and a pixel layer above the Background, active.
+/// The app with a new document and a pixel layer above the Background, active. The window is tall
+/// enough for the whole Blend Mode list below its box (at 900 pt it fits on neither side and scrolls).
 fn harness() -> Harness<'static, PhotocraftApp> {
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_max_steps(64).build_eframe(|cc| {
+    let mut h = Harness::builder().with_size(vec2(1440.0, 1600.0)).with_max_steps(64).build_eframe(|cc| {
         PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
