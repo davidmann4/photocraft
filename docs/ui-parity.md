@@ -212,7 +212,7 @@ Paragraph; the rest open as in-app floating windows.
 | Window size and dock width remembered | done | UI-217-2 |
 | Command palette with recents | done | UI-217-7 |
 | Menu bar from the keyboard: Alt / F10 focus the bar, ← → ↓ ↩ drive it, Alt+letter opens a menu, underlined mnemonics run items | done | `menu_keys.rs`, #4988; macOS uses the native bar |
-| Every preference takes effect | partial | 24 of 166 do nothing (scorecard, 2026-10-15); Column Size drives Image Size and Canvas Size's Columns width unit (#6214) |
+| Every preference takes effect | partial | 24 of 170 do nothing (scorecard, 2026-10-15); Column Size drives Image Size and Canvas Size's Columns width unit (#6214) |
 | UI scale presets | missing | UI-217-9, #2492 |
 | History snapshots: camera button, snapshot rows (click returns and selects, rename, delete; the trash deletes the selected snapshot, and a snapshot or state dragged onto it, #5324), `history.*Snapshot` commands | partial | `history_cmds.rs`, `snapshot_rows` in `panels.rs`; New Snapshot dialog, first snapshot and History Options to come (#2966) |
 | Themes: Photoshop's four greys | partial | five themes; #2661 |
@@ -243,7 +243,7 @@ Paragraph; the rest open as in-app floating windows.
 | 2026-10-11 | minor | Spring-loaded tool letters done (#2672): holding any tool letter (Z included) past 300 ms, or using the canvas while it is down, makes the tool temporary until release |
 | 2026-10-11 | minor | Type formatting keys done: ⇧⌘K, U, B, I and /, ⌥↑/↓, ⇧⌥↑/↓, ⌥←/→ over a selection and ⌥⇧⌘H format the selected type while editing, and no longer reach Color Settings, Desaturate, Auto Color or Inverse |
 | 2026-10-12 | minor | Pen Auto Add/Delete on the active path, with its options-bar checkbox, hover feedback and + / − cursor badge (#4144) |
-| 2026-10-15 | minor | Units & Rulers › Column Size takes effect: Image Size and Canvas Size offer a Columns width unit (#6214); preferences that do nothing 24 of 166 |
+| 2026-10-15 | minor | Units & Rulers › Column Size takes effect: Image Size and Canvas Size offer a Columns width unit (#6214); preferences that do nothing 24 of 170 |
 | 2026-10-15 | minor | Pen Auto Add/Delete works on the path being drawn: a click on its segment adds an anchor, on a middle anchor deletes it, and drawing carries on (#6140) |
 | 2026-10-12 | minor | Toolbar tool shortcuts can be reassigned, removed and reset in Keyboard Shortcuts (#4086); capture, restart, group cycling, conflict and text-focus regressions |
 | 2026-10-12 | minor | Smart filter rows can be selected, and dragged (⌥: copied) onto another smart object or onto Delete (#4271) |

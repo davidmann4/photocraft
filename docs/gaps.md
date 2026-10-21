@@ -203,7 +203,7 @@ what an agent can't finish alone.
   Size and Canvas Size offer a Columns width unit (#6214).
 - **Progress (2026-10-12):** toolbar tool shortcuts can be reassigned, removed and reset (#4086),
   with saved bindings, matching toolbar hints and regression coverage (`ui-egui/src/tool_shortcuts.rs`).
-- **Missing:** 24 of 166 preferences do nothing (scorecard prefs audit); panel groups can't
+- **Missing:** 24 of 170 preferences do nothing (scorecard prefs audit); panel groups can't
   float or tear off into OS windows (UI-217-5, #1828, #1213, #2305); Color panel lacks wheel and
   slider modes (UI-217-17, #2569); more themes (UI-217-11, #2661); a single pixel layer
   copies without its mask and styles (UI-217-23; fill and adjustment layers copy whole, #2344); tool-specific context menus beyond brushes, selections and Pen
