@@ -1687,7 +1687,9 @@ pub fn combo_list<R>(
         let rows = ctx.data(|d| d.get_temp::<f32>(rows_id));
         let up = rows.is_some_and(|rows| rows > below) && above > below;
         let (align, room) = if up { (egui::RectAlign::TOP_START, above) } else { (egui::RectAlign::BOTTOM_START, below) };
-        let room = room.max(MENU_MIN_HEIGHT);
+        // Only the room that side has, even when it is small: a taller list would be pushed back
+        // into the window, over its button (#5495 review).
+        let room = room.max(0.0);
         let inner = egui::Popup::menu(&button)
             .id(popup_id)
             .anchor(button.rect)
@@ -2726,10 +2728,11 @@ mod tests {
         }
     }
 
-    /// In a window too short for the list on either side the list still covers its button; the
-    /// release of the click that opened it, held a few frames, chooses nothing (#5495 review).
+    /// In a window with less than 120 pt on either side of the button the list still leaves
+    /// its button free, scrolling in the room that side has, and stays in the window; the release
+    /// of the click that opened it, held a few frames, chooses nothing (#5495 review).
     #[test]
-    fn the_release_of_the_opening_click_chooses_nothing_where_the_list_covers_the_button() {
+    fn in_a_very_short_window_the_list_still_leaves_its_button_free_and_the_opening_click_chooses_nothing() {
         use photocraft_color::BlendMode;
         let mut h = Harness::builder().with_size(egui::vec2(400.0, 110.0)).build_ui_state(
             |ui, mode: &mut BlendMode| {
@@ -2749,7 +2752,8 @@ mod tests {
             h.run_steps(frames);
         }
         let list = open_list(&h);
-        assert!(list.contains(at), "the list {list:?} covers the button {button:?} here");
+        assert!(!list.intersects(button.shrink(1.0)), "the list {list:?} leaves the button {button:?} free");
+        assert!(list.top() >= 0.0 && list.bottom() <= 110.0, "the list {list:?} is in the window");
         assert_eq!(*h.state(), BlendMode::Normal, "the click chose nothing");
     }
 
