@@ -160,7 +160,13 @@ fn lex(src: &str) -> Vec<Token> {
             i += if ch == '"' { 1 } else { 2 };
             while i < c.len() {
                 match at(i) {
-                    '\\' => i += 2,
+                    '\\' => {
+                        // A line continuation (`\` before a newline) still ends a source line.
+                        if at(i + 1) == '\n' {
+                            line += 1;
+                        }
+                        i += 2;
+                    }
                     '"' => {
                         i += 1;
                         break;
@@ -574,6 +580,25 @@ fn panel(app: &mut App, ui: &mut Ui) {
         assert_eq!(v.len(), 1);
         assert_eq!((v[0].file.as_str(), v[0].line, v[0].func.as_str()), ("crates/ui-egui/src/x.rs", 4, "panel"));
         assert!(v[0].what.contains("active_mut"));
+    }
+
+    #[test]
+    fn line_continuations_in_strings_keep_line_numbers() {
+        let src = "
+fn panel(app: &mut App, ui: &mut Ui) {
+    ui.label(\"first \\
+        second \\
+        third\");
+    if ui.button(\"Hide\").clicked() {
+        if let Some(st) = app.session.active_mut() {
+            st.active_layer = None;
+        }
+    }
+}
+";
+        let v = scan("f.rs", src, &[]);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].line, 7);
     }
 
     #[test]
