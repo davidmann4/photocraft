@@ -17,8 +17,11 @@
 //! * test code is skipped: `*_tests.rs`, `tests.rs`, files under `tests/` and `#[cfg(test)]` items.
 //!
 //! Out of scope: preferences (`edit_prefs`), shell view state (`app.ui`, the `UI_COMMANDS`) and
-//! switching the active document. Calls into helper functions are not followed, so a handler that calls a helper which mutates the
-//! document passes; the check catches the inline pattern, which is how such shortcuts start.
+//! switching the active document. Calls into helper functions are not followed, so a handler
+//! that calls a helper which mutates the document passes; the check catches the inline pattern,
+//! which is how such shortcuts start. Only `if` blocks (also a `match` arm guard with a block)
+//! and `let` locals count as handlers: a `match` on a response without one, a response kept in a
+//! struct field and tested later, or a closure callback is not scanned.
 //!
 //! Existing violations are listed in [`ALLOWLIST`] by file and enclosing function, each with the
 //! reason it is still there. An entry that no longer matches anything is an error, so the list only
@@ -599,6 +602,21 @@ fn panel(app: &mut App, ui: &mut Ui) {
         let v = scan("f.rs", src, &[]);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].line, 7);
+    }
+
+    #[test]
+    fn a_match_arm_guard_with_a_block_is_a_click_handler() {
+        let src = "
+fn panel(app: &mut App, ui: &mut Ui) {
+    match ui.button(\"Hide\") {
+        r if r.clicked() => {
+            app.session.active_mut();
+        }
+        _ => {}
+    }
+}
+";
+        assert_eq!(lines(src), [(5, "panel".to_string())]);
     }
 
     #[test]

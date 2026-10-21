@@ -307,7 +307,12 @@ widget function that takes a `Ui` and returns `bool`. Inside one it fails, with 
 direct document or session change: `active_mut()`, `Arc::make_mut` on a doc,
 `session.undo/redo/select_layer/add_document/close(…)` or an assignment to a session field
 (`app.session.tools.foreground = …`). Dispatch the command instead (`app.run`, `menus::invoke`).
-The scanner is lexical and does not follow calls into helpers. Existing violations are listed in
+A passing scan is not complete coverage. The scanner is lexical: it does not follow calls into
+helpers, and it only recognises an `if` block (a `match` arm guard with a block counts) or a
+`let` local holding a response, so a `match` on a response without such a guard, a response kept
+in a struct field and tested later, or a closure callback is not checked. Preferences
+(`edit_prefs`), shell view state (`app.ui`, the `UI_COMMANDS`) and switching the active document
+are out of scope. Existing violations are listed in
 `ALLOWLIST` in `xtask/src/panel_commands.rs` by file and function, each with its reason; an entry
 that matches nothing any more is an error, so the list only shrinks.
 
