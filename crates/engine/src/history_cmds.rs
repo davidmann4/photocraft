@@ -491,7 +491,7 @@ mod tests {
         let base = with.active().unwrap().memory_bytes();
         with.execute("history.newSnapshot", json!({"from": "mergedLayers"})).unwrap();
         let st = with.active().unwrap();
-        let flat = tile_bytes(&st.snapshots[0].doc);
+        let flat = tile_bytes(&st.snapshots.last().unwrap().doc);
         assert!(flat > 0);
         assert_eq!(st.memory_bytes(), base + flat);
         // Room for the document's tiles and four fill tiles.
@@ -523,11 +523,11 @@ mod tests {
         s.execute("edit.fill", json!({"color": "#0000ff"})).unwrap();
         let st = s.active().unwrap();
         // The snapshot's green layer tile, now only in it and the last state.
-        let shared = tile_bytes(&Document { layers: st.snapshots[0].doc.layers[1..].to_vec(), ..(*st.doc).clone() });
+        let shared = tile_bytes(&Document { layers: st.snapshots.last().unwrap().doc.layers[1..].to_vec(), ..(*st.doc).clone() });
         let all = st.history.unique_bytes(&st.doc);
         let r = s.execute("edit.purge.histories", json!({})).unwrap();
         assert_eq!(r["bytes"], json!(all - shared), "the green tile stays with the snapshot");
-        assert_eq!(s.active().unwrap().snapshots.len(), 1);
+        assert_eq!(s.active().unwrap().snapshots.len(), 2, "the first snapshot and the new one");
     }
 
     #[test]
