@@ -827,7 +827,10 @@ fn prepare(f: &File<'_>, dir: &Ifd, limits: &Limits, whole: bool) -> Result<Prep
     }
     // Decompression-bomb guard: no compression method expands data by more than a few thousand
     // times (Deflate at most ~1032:1, LZW ~2730:1, PackBits 128:1), so a file far too small for
-    // its declared size is refused before the image is allocated. Uncompressed data may be up
+    // its declared size is refused before the image is allocated. CCITT Group 4 codes a blank row
+    // of a strip or tile in one bit (a V0 code), so its bound is the chunk width (the decoder
+    // reads at most 65535): a blank landscape A4 page at 600 dpi, 7016 px wide, compresses past
+    // 4096:1 (Groups 3 and 2 are not decoded). Uncompressed data may be up
     // to three quarters missing (that decodes with a `Truncated` warning). Only the bytes the
     // strip or tile tables point at inside the file count (and never more than the file), so
     // padding the file while pointing the chunks past its end does not raise the bound: the
@@ -836,6 +839,7 @@ fn prepare(f: &File<'_>, dir: &Ifd, limits: &Limits, whole: bool) -> Result<Prep
     let ratio: u64 = match f.tag_uint(dir, ifd::TAG_COMPRESSION).unwrap_or(1) {
         1 => 4,
         32773 => 130,
+        4 => cw.clamp(4096, 65_535),
         _ => 4096,
     };
     let len = f.b.len() as u64;

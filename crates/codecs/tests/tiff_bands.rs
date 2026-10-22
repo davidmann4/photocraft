@@ -287,3 +287,46 @@ fn padding_does_not_let_missing_chunks_past_the_bomb_guard() {
     }
     assert!(matches!(decode(&built.bytes), Err(CodecError::Malformed { .. })));
 }
+
+/// An all-white CCITT Group 4 strip: one V0 code (a 1 bit) per row, then the EOFB.
+fn blank_g4(h: u32) -> Vec<u8> {
+    let mut bits = vec![true; h as usize];
+    for _ in 0..2 {
+        bits.extend([false; 11]);
+        bits.push(true);
+    }
+    bits.chunks(8).map(|c| c.iter().enumerate().fold(0u8, |a, (i, &b)| a | (u8::from(b) << (7 - i)))).collect()
+}
+
+#[test]
+fn a_blank_fax_page_wider_than_4096_px_passes_the_bomb_guard() {
+    // A blank 600 dpi page (A4 landscape, A3) codes each row in one bit, past 4096:1: it must
+    // open, with or without the metadata and other pages that used to raise the bound.
+    for (w, h) in [(7016u32, 4961u32), (7016, 9921)] {
+        let mut d = Dir { entries: base(w, h, 1, 1, 0), chunks: vec![blank_g4(h)], tiled: false }.tag(278, LONG, &[u64::from(h)]);
+        d.entries.retain(|e| e.0 != 259);
+        let d = d.tag(259, SHORT, &[4]);
+        let pages: Vec<Dir> = (0..3).map(|_| d.clone()).collect();
+        for (what, bytes) in
+            [("one page", build(true, false, std::slice::from_ref(&d), &[0]).bytes), ("three pages", build(true, false, &pages, &[0, 1, 2]).bytes)]
+        {
+            let img = decode(&bytes).unwrap_or_else(|e| panic!("{w}x{h} {what}: {e}"));
+            assert_eq!(img.dimensions(), (w, h), "{what}");
+            assert!(img.data().iter().all(|&v| v == 255), "{w}x{h} {what}: not white");
+        }
+    }
+    let mut d = Dir { entries: base(7016, 4961, 1, 1, 0), chunks: vec![blank_g4(4961)], tiled: false }.tag(278, LONG, &[4961]);
+    d.entries.retain(|e| e.0 != 259);
+    let bytes = build(true, false, &[d.tag(259, SHORT, &[4])], &[0]).bytes;
+    assert!(banded(&bytes, None, &Limits::banded(), true).unwrap().data() == decode(&bytes).unwrap().data());
+    // Still a bound: 100 bytes of Group 4 can't hold that page (4096:1 for Group 3, which is not decoded).
+    for compression in [4, 3] {
+        let mut d = Dir { entries: base(7016, 4961, 1, 1, 0), chunks: vec![vec![0x80; 100]], tiled: false }.tag(278, LONG, &[4961]);
+        d.entries.retain(|e| e.0 != 259);
+        let bytes = build(true, false, &[d.tag(259, SHORT, &[compression])], &[0]).bytes;
+        match decode(&bytes) {
+            Err(CodecError::Malformed { message, .. }) => assert!(message.contains("hold 100 bytes"), "{message}"),
+            other => panic!("compression {compression}: {:?}", other.map(|i| i.dimensions())),
+        }
+    }
+}
