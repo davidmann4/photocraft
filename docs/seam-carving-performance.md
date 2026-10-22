@@ -1,20 +1,21 @@
 # Content-Aware Scale performance
 
 2026-10-22. Two things are recorded here: what this change saves, and a correction to the P28 row's
-recorded number, which predates the seam-search proxies and reads as four orders of magnitude worse
-than the code does today.
+recorded number, which predates the seam-search proxies and reads as hundreds of times worse than
+the code does today.
 
 ## The change
 
 Content-Aware Scale shrinks an image by removing one seam at a time. On large images the seams are
 searched on a vertically averaged copy (`carve_width_proxy_height`), and a panel column found there
 is not an original column: each seam already removed has shifted the panel left. That was tracked
-with an `idx` map — one `usize` per proxy pixel, built up front and shifted by every seam.
+with an `idx` map: one `usize` per proxy pixel, built up front and shifted by every seam.
 
 The original column is recoverable without the map: for the `i`-th column already taken from a row,
 `o - i` is the panel column it occupied, so the taken columns at or left of panel column `x` are
-those with `o - i <= x`, and the original column is `x` plus that count. The per-row list is short
-(one entry per seam) and inserting into it is a `partition_point`.
+those with `o - i <= x`, and the original column is `x` plus that count. `o - i` never decreases along a
+row's sorted list, so that count is a binary search, and the original column is inserted at the
+same position. The rows are independent and are updated in parallel, like the pixel shift.
 
 Output is unchanged: the same original columns reach the assembly pass, in the same order, so every
 pixel written is the pixel the map produced. The 4-channel cases below hash identically (FNV-1a over
@@ -33,15 +34,32 @@ the same session, nothing else running.
 | 6000 × 4000 → 5400, 4 ch | 3009.3 | 2559.4 | −15.0 % | identical |
 | 7200 × 5000 → 6480, 4 ch | 4352.8 | 3766.9 | −13.5 % | identical |
 
-The map was 24 MB next to a 36 MB pixel buffer at 24 MP, so the saving tracks how many bytes of row
+The map was 24 MB next to a 48 MB pixel buffer at 24 MP and 4 channels, so the saving tracks how many bytes of row
 the seams have to shift. A three-channel case was measured too and moved inside the timer noise, so
 it is not reported as a win here. Further seam-search savings have to come from the dynamic program
 itself, not from bookkeeping.
 
+### Larger shrinks
+
+A linear scan for the count (the first version of this change, which the timings above and the
+P28 section below were measured with) costs O(seams) per row per seam, so
+it lost to the map once many seams come out of one row; the binary search and the parallel row
+update keep it ahead. Windows 11, AMD Ryzen 9 7950X (16 cores / 32 threads), rustc 1.99.0,
+`--release`, fastest of three runs of `bench_seam 6000 4000 <new_width> 4`; output hashes identical
+across all three builds:
+
+| 6000 × 4000, 4 ch, to | Map (ms) | Linear scan (ms) | Binary search, parallel rows (ms) |
+|---|---:|---:|---:|
+| 5400 (90 %) | 2644 | 2183 | 2333 |
+| 3000 (50 %) | 9050 | 9118 | 7970 |
+| 600 (10 %) | 11675 | 17854 | 10183 |
+
+Other builds shared the machine during these runs, so the 90 % row is within noise of the scan.
+
 ## P28's recorded number is stale
 
-`perf/budgets.toml` records P28 (Content-Aware Scale on 24 MP to 90 % width) as 954 192 ms from the
-2026-10-05 baseline, which is why it carries `enforce = false`. The seam-search proxies and the
+`perf/baseline.json` records P28 (Content-Aware Scale on 24 MP to 90 % width) as 954 192 ms from the
+2026-10-05 baseline, which is why `perf/budgets.toml` carries `enforce = false` for it. The seam-search proxies and the
 per-seam energy update landed after that capture:
 
 | Tree | 6000 × 4000 → 5400, 4 ch |
@@ -51,8 +69,8 @@ per-seam energy update landed after that capture:
 
 `f5d2bcb` has no `PROXY_SHRINK_MIN_HEIGHT`: it carves at full height with a full energy recompute per
 seam. The 954 s in the baseline was that code on a machine whose recorded load average was 226–290
-on 14 cores; the ratio, not the absolute, is the point — the operation is ~100× faster than the row
-says.
+on 14 cores. The absolute numbers are not comparable; the ratio between the two runs above (about
+104×, same machine, same timer) is the point.
 
 The row itself is not flipped to `enforce = true` here: the budget is set for the macOS/aarch64
 machine class and only a run on that class can vouch for it. The carving core above is 2.56 s at
