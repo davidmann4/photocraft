@@ -359,19 +359,25 @@ fn carve_width_proxy_height(w: usize, h: usize, ch: usize, img: &[f32], protect:
     });
 
     let seam_count = w - new_w;
-    let mut carver = Carver::new(w, proxy_h, ch, proxy, proxy_protect, true);
-    let mut removed = Vec::with_capacity(seam_count);
+    // Removing a seam shifts the panel left, so a panel column is not an original one. Tracking
+    // the original column per pixel costs a third buffer that every seam has to shift (24 MB a
+    // seam at 24 MP); counting the columns already taken from that row is exact and costs a
+    // comparison.
+    let mut carver = Carver::new(w, proxy_h, ch, proxy, proxy_protect, false);
+    let mut removed_by_row: Vec<Vec<usize>> = vec![Vec::new(); proxy_h];
+    let mut taken = 0usize;
     while carver.cw > new_w {
         ctl.check()?;
-        removed.push(carver.remove_seam());
-        ctl.progress(removed.len() as f32 / seam_count as f32);
-    }
-
-    let mut removed_by_row = Vec::with_capacity(proxy_h);
-    for proxy_y in 0..proxy_h {
-        let mut columns: Vec<usize> = removed.iter().map(|path| path[proxy_y]).collect();
-        columns.sort_unstable();
-        removed_by_row.push(columns);
+        for (y, &x) in carver.remove_seam().iter().enumerate() {
+            let row = &mut removed_by_row[y];
+            // `o - i` is the panel column of the i-th column taken from this row, so the taken
+            // columns at or left of `x` are those with `o - i <= x`.
+            let orig = x + row.iter().enumerate().take_while(|(i, o)| *o - i <= x).count();
+            let at = row.partition_point(|&o| o < orig);
+            row.insert(at, orig);
+        }
+        taken += 1;
+        ctl.progress(taken as f32 / seam_count as f32);
     }
     let mut out = Vec::with_capacity(new_w * h * ch);
     let mut columns = vec![0; seam_count];
