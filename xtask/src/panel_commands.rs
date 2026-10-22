@@ -54,6 +54,13 @@ pub const ALLOWLIST: &[Allowed] = &[
         func: "hsb_sliders",
         reason: "Color panel HSB sliders assign session.tools.foreground; dispatch tools.setColors",
     },
+    // The Color panel's RGB sliders assign the foreground or background colour the same way.
+    // Fix: dispatch `tools.setColors`.
+    Allowed {
+        file: "crates/ui-egui/src/panels.rs",
+        func: "rgb_sliders",
+        reason: "Color panel RGB sliders assign session.tools.foreground/background; dispatch tools.setColors",
+    },
     // The Color panel's colour field and hue strip (and their readout) assign the foreground or
     // background colour on every drag frame. Fix: dispatch `tools.setColors`.
     Allowed {
