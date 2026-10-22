@@ -293,4 +293,26 @@ mod tests {
             assert_eq!(px(4, 4), [1.0, 1.0, 1.0, 1.0], "{depth}-bit: outside it");
         }
     }
+
+    /// An elliptical selection's preview vacates only the ellipse: the corners of its bounding box
+    /// keep their pixels, as the command leaves them.
+    #[test]
+    fn the_preview_vacates_only_the_selected_pixels() {
+        for depth in [8, 16] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            let ctx = egui::Context::default();
+            app.run("file.new", json!({"width": 64, "height": 48, "depth": depth, "background": "white"})).unwrap();
+            app.session.tools.background = [0.0, 0.0, 1.0, 1.0];
+            app.run("select.rect", json!({"x": 10, "y": 10, "width": 40, "height": 20, "ellipse": true, "antiAlias": false})).unwrap();
+            app.sync_views();
+            crate::menus::invoke(&mut app, &ctx, COMMAND, json!({})).unwrap();
+            let pv = app.transform_preview.as_ref().unwrap();
+            let id = app.session.active().unwrap().active_layer.unwrap();
+            let px = |x, y| pv.doc.layer(id).unwrap().surface().unwrap().rgba(x, y);
+            assert_eq!(px(30, 20), [0.0, 0.0, 1.0, 1.0], "{depth}-bit: inside the ellipse");
+            for (x, y) in [(10, 10), (49, 10), (49, 29), (48, 12)] {
+                assert_eq!(px(x, y), [1.0, 1.0, 1.0, 1.0], "{depth}-bit: ({x}, {y}) is outside the ellipse");
+            }
+        }
+    }
 }

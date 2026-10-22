@@ -451,6 +451,31 @@ fn content_aware_scale_on_the_background_vacates_to_the_background_colour() {
     }
 }
 
+/// An elliptical selection vacates only its own pixels: the corners of its bounding box that
+/// the scaled result doesn't cover keep their pixels, on the Background and on a normal layer.
+#[test]
+fn content_aware_scale_vacates_only_the_selected_pixels() {
+    for depth in [8, 16] {
+        let mut s = session(depth);
+        s.tools.background = [0.0, 0.0, 1.0, 1.0];
+        s.execute("select.rect", json!({"x": 10, "y": 10, "width": 40, "height": 20, "ellipse": true, "antiAlias": false})).unwrap();
+        let r = s.execute("edit.contentAwareScale", json!({"width": 20})).unwrap();
+        assert_eq!(r["bounds"], json!([10, 10, 20, 20]), "{depth}-bit");
+        assert_eq!(px_rgba(&s, 45, 20), [0.0, 0.0, 1.0, 1.0], "{depth}-bit: selected and vacated");
+        for (x, y) in [(49, 10), (49, 29), (48, 12)] {
+            assert_eq!(px_rgba(&s, x, y), [1.0, 1.0, 1.0, 1.0], "{depth}-bit: ({x}, {y}) is outside the ellipse");
+        }
+        // A normal layer keeps the unselected corners too.
+        let mut s = session(depth);
+        s.execute("layer.new.layer", json!({})).unwrap();
+        s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        s.execute("select.rect", json!({"x": 10, "y": 10, "width": 40, "height": 20, "ellipse": true, "antiAlias": false})).unwrap();
+        s.execute("edit.contentAwareScale", json!({"width": 20})).unwrap();
+        assert_eq!(px_rgba(&s, 45, 20)[3], 0.0, "{depth}-bit: selected and vacated");
+        assert_eq!(px_rgba(&s, 49, 10), [1.0, 0.0, 0.0, 1.0], "{depth}-bit: outside the ellipse");
+    }
+}
+
 #[test]
 fn content_aware_scale_params() {
     let mut s = session(8);

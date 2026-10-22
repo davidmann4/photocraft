@@ -347,7 +347,36 @@ pub(crate) fn begin_content_aware(
                 dst.copy_from_slice(src);
             }
         }
-        s.fill_rect(region, &fill);
+        match doc.selection.as_ref() {
+            None => s.fill_rect(region, &fill),
+            // Only the selected pixels are vacated, by their coverage (an ellipse, lasso or
+            // feathered selection keeps the rest of its bounding box), row by row.
+            Some(sel) => {
+                let n = fmt.channels();
+                for y in region.y0..region.y1 {
+                    let row = photocraft_geom::Rect::new(region.x0, y, region.x1, y + 1);
+                    let mask = sel.read_region(row);
+                    let mut px = s.read_region(row);
+                    for (p, &k) in px.chunks_exact_mut(n).zip(&mask) {
+                        let k = k.clamp(0.0, 1.0);
+                        if k <= 0.0 {
+                            continue;
+                        }
+                        if background.is_some() {
+                            for (c, f) in p.iter_mut().zip(&fill) {
+                                *c += (f - *c) * k;
+                            }
+                        } else if let Some(a) = p.last_mut() {
+                            *a *= 1.0 - k;
+                            if *a <= 0.0 {
+                                p.fill(0.0);
+                            }
+                        }
+                    }
+                    s.write_region(row, &px);
+                }
+            }
+        }
         s.prune();
     }
     let max_side = ctx.input(|i| i.max_texture_side).max(app.gpu.as_ref().map_or(1, |g| g.max_texture_side()));

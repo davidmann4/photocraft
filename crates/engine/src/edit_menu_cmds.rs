@@ -976,8 +976,11 @@ fn content_aware_scale(s: &mut Session, p: &Value) -> Result<Value> {
             s.edit(label, |doc, _| {
                 // The scaled area is vacated as Delete leaves it: transparent, or on the Background,
                 // which can't hold transparency, the background colour (Photoshop).
+                // Only the selected pixels are vacated: an elliptical, lasso or feathered
+                // selection leaves the rest of its bounding box as it was.
                 writable_surface(doc, id)?;
-                crate::edit_cmds::clear_area(doc, id, region, None, background)?;
+                let sel = doc.selection.clone();
+                crate::edit_cmds::clear_area(doc, id, region, sel.as_ref(), background)?;
                 let surf = writable_surface(doc, id)?;
                 surf.write_region(dst, &out);
                 surf.prune();
