@@ -23,12 +23,12 @@ const USAGE: &str = "\
 usage: cargo xtask <command>
 
 commands:
-  layers          enforce the crate dependency layering (plan/architecture.md §3)
+  layers          enforce the crate dependency layering (docs/architecture.md §3)
   panel-commands  fail on a shell click handler that changes the document or session directly instead of
                   dispatching a command id (allowlist: xtask/src/panel_commands.rs)
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates
   ci              fmt --check, clippy -D warnings, test, layers, panel-commands, wasm (stops at first failure)
-  corpus [--all | --pngsuite | --psd | --psd-tools | --pixls | --photoshop | --gimp] [--local] [--update-manifest]
+  corpus [--all | --pngsuite | --psd | --psd-tools | --pixls | --atn | --photoshop | --gimp] [--local] [--update-manifest]
                   show where test corpora live and their pins (xtask/src/corpus_pins.rs), or fetch
                   them into corpus/ (pinned commits, sha256-verified; --all = every corpus but pixls,
                   --photoshop/--gimp --local copy from ../photocraft-corpus or $PHOTOCRAFT_CORPUS_REPO)
@@ -110,7 +110,7 @@ pub fn metadata() -> Result<serde_json::Value, String> {
 
 fn cmd_layers() -> Result<(), String> {
     let crates = layers::from_metadata(&metadata()?)?;
-    println!("Dependency layering (plan/architecture.md §3)\n");
+    println!("Dependency layering (docs/architecture.md §3)\n");
     println!("{:<28} {:<14} workspace deps", "crate", "layer");
     for c in &crates {
         let ws: Vec<String> = c
