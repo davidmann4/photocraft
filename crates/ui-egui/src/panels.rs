@@ -3613,7 +3613,7 @@ fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // The newest past state is a new document on every step, Undo and Redo, also at the state
     // limit, where the counts and a repeated name stay the same.
     let newest = st.history.past_len().checked_sub(1).and_then(|i| st.history.state(i)).map(|d| std::sync::Arc::as_ptr(&d) as usize);
-    let spot = (doc.id, history_spot(st), newest);
+    let spot = (doc_id, history_spot(st), newest);
     let ctx = ui.ctx().clone();
     // A row dragged onto the trash (#5324); a drag that never saw its release must not outlive it.
     if !ctx.input(|i| i.pointer.primary_down() || i.pointer.any_released()) {
