@@ -725,6 +725,71 @@ fn floating_point_jpeg_xl_linear_raw_decodes() {
     assert_eq!(float.rgb, develop(&ints.build(), &DevelopOptions::default()).unwrap().rgb);
 }
 
+/// A white level per sample: the highest becomes 65535, so no sample clips below its own white.
+#[test]
+fn floating_point_white_levels_per_sample_scale_from_the_highest() {
+    let (w, h) = (24, 16);
+    // Red and blue at their white level 0.5, green at its white level 1.0.
+    let data: Vec<u16> = (0..w * h).flat_map(|_| [32768, 65535, 32768]).collect();
+    let mut spec = float_jxl_dng(&data, w, h, None);
+    spec.raw_extra.push((50717, Val::Double(vec![0.5, 1.0, 0.5])));
+    let s = sensor(&spec.build());
+    assert_eq!(s.white, [32767.5, 65535.0, 32767.5]);
+    assert_eq!(s.data, data, "green reaches its white level instead of clipping at half of it");
+}
+
+/// A LinearizationTable maps integer samples only: floating-point data ignores it.
+#[test]
+fn floating_point_raw_data_ignores_a_linearization_table() {
+    let (w, h) = (8, 4);
+    let data = noise(w * h * 3, 16);
+    let mut spec = float_jxl_dng(&data, w, h, None);
+    spec.linearization = Some(vec![0, 1000]);
+    let s = sensor(&spec.build());
+    assert_eq!(s.white, [65535.0; 3]);
+    assert_eq!(s.data, data);
+}
+
+/// Adobe's lossy DNGs need the MapPolynomial in their OpcodeList2 for colour and contrast. Not
+/// applied, the colours would be wrong: refused, so the importer opens the preview instead. The
+/// same opcode on integer data still develops, with a warning, as before.
+#[test]
+fn floating_point_raw_data_that_needs_map_polynomial_is_unsupported() {
+    let (w, h) = (8, 4);
+    let list = photocraft_raw::testgen::map_polynomial_opcode_list([0, 0, h as u32, w as u32], &[0.0, 1.2, -0.2]);
+    let mut spec = float_jxl_dng(&noise(w * h * 3, 16), w, h, None);
+    spec.opcode_list2 = Some(list.clone());
+    match decode(&spec.build(), &Limits::default()) {
+        Err(RawError::Unsupported(m)) => assert!(m.contains("lossy") && m.contains("MapPolynomial"), "{m}"),
+        other => panic!("expected unsupported, got {other:?}"),
+    }
+    // Refused from the tags, before the raw data is decoded: a damaged stream is never read.
+    let mut damaged = spec.clone();
+    damaged.jxl_segments = vec![vec![0xFF, 0x0A, 0, 0]];
+    assert!(matches!(decode(&damaged.build(), &Limits::default()), Err(RawError::Unsupported(_))));
+    // The same map in OpcodeList1 (applied before linearization) is refused too.
+    spec.opcode_list2 = None;
+    spec.raw_extra.push((51008, Val::Undefined(list.clone())));
+    assert!(matches!(decode(&spec.build(), &Limits::default()), Err(RawError::Unsupported(m)) if m.contains("MapPolynomial")));
+    let mut ints = DngSpec::cfa(w, h, noise(w * h * 3, 16));
+    ints.samples = 3;
+    ints.white = 65535;
+    ints.storage = DngStorage::Strips { rows: h };
+    ints.opcode_list2 = Some(list);
+    let d = develop(&ints.build(), &DevelopOptions::default()).unwrap();
+    assert!(d.warnings.iter().any(|w| w.contains("MapPolynomial not applied")), "{:?}", d.warnings);
+}
+
+/// A lens-shading GainMap is applied, so floating-point data that only carries one still develops.
+#[test]
+fn floating_point_raw_data_with_only_a_gain_map_develops() {
+    let (w, h) = (24, 16);
+    let mut spec = float_jxl_dng(&noise(w * h * 3, 16), w, h, None);
+    spec.opcode_list2 = Some(photocraft_raw::testgen::gain_map_opcode_list([0, 0, h as u32, w as u32], 1, [[1.0, 1.2], [1.1, 1.3]]));
+    let d = develop(&spec.build(), &DevelopOptions::default()).unwrap();
+    assert_eq!((d.width, d.height), (w as u32, h as u32));
+}
+
 #[test]
 fn floating_point_raw_data_that_isnt_jpeg_xl_is_unsupported() {
     let (w, h) = (8, 4);

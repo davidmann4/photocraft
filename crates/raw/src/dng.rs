@@ -4,7 +4,7 @@
 
 use crate::color::{self, Calibration, ColorInfo, IDENTITY};
 use crate::error::{RawError, Result};
-use crate::sensor::{BlackLevels, Cfa, JpegLayout, Rect, Sensor, read_plane};
+use crate::sensor::{BlackLevels, Cfa, JPEG_XL, JpegLayout, Rect, Sensor, read_plane};
 use crate::tiff::{Ifd, Tiff, tag};
 use crate::{Limits, RawFormat, opcodes};
 
@@ -132,6 +132,24 @@ pub(crate) fn decode(t: &Tiff, limits: &Limits) -> Result<Sensor> {
     let raw = raw_ifd(t, &ifds).ok_or_else(|| RawError::malformed("DNG has no raw image"))?;
     let mut warnings = Vec::new();
     let photometric = t.tag_uint(&raw, tag::PHOTOMETRIC).unwrap_or(0);
+    // Lossy (floating-point JPEG XL) DNGs need the value maps in their opcode lists for colour
+    // and contrast: Adobe's DNG Converter puts a MapPolynomial per plane in OpcodeList2. Those
+    // aren't applied yet, and developed without them the colours are wrong, so such data is
+    // refused before it is decoded, and the importer opens the converter's own preview instead.
+    if t.tag_uint(&raw, tag::SAMPLE_FORMAT) == Some(3) && t.tag_uint(&raw, tag::COMPRESSION) == Some(JPEG_XL) {
+        let mut maps: Vec<String> = Vec::new();
+        for tg in [tag::OPCODE_LIST_1, tag::OPCODE_LIST_2, tag::OPCODE_LIST_3] {
+            let (_, skipped) = raw.get(tg).and_then(|e| t.raw(e)).map(opcodes::parse).unwrap_or_default();
+            for n in skipped {
+                if matches!(n.as_str(), "MapPolynomial" | "MapTable") && !maps.contains(&n) {
+                    maps.push(n);
+                }
+            }
+        }
+        if !maps.is_empty() {
+            return Err(RawError::unsupported(format!("lossy raw data whose colours depend on DNG opcodes ({})", maps.join(", "))));
+        }
+    }
     let plane = read_plane(t, &raw, limits, JpegLayout::Flat)?;
     let samples = plane.samples;
     let is_cfa = photometric == PHOTOMETRIC_CFA;
@@ -215,7 +233,9 @@ pub(crate) fn decode(t: &Tiff, limits: &Limits) -> Result<Sensor> {
     }
 
     let max = ((1u32 << plane.bits) - 1) as f32;
-    let linearization = raw.get(tag::LINEARIZATION_TABLE).map(|e| t.uints(e)).filter(|v| !v.is_empty() && v.len() <= 65536);
+    // A LinearizationTable maps integer samples (DNG 1.7): floating-point data has none to map.
+    let linearization =
+        raw.get(tag::LINEARIZATION_TABLE).filter(|_| plane.float_scale.is_none()).map(|e| t.uints(e)).filter(|v| !v.is_empty() && v.len() <= 65536);
     let linearization: Option<Vec<u16>> = linearization.map(|v| v.into_iter().map(|x| x.min(65535) as u16).collect());
     let white_default = match &linearization {
         Some(l) => f32::from(l.iter().copied().max().unwrap_or(u16::MAX)),
@@ -224,7 +244,7 @@ pub(crate) fn decode(t: &Tiff, limits: &Limits) -> Result<Sensor> {
     // Floating-point levels are in the floats' units: scale them as the samples were.
     let unit = plane.float_scale.unwrap_or(1.0);
     let wl = t.tag_floats(&raw, tag::WHITE_LEVEL);
-    let white = [0, 1, 2].map(|s| wl.get(s).or_else(|| wl.first()).map(|v| *v as f32 * unit).filter(|v| *v > 0.0).unwrap_or(white_default));
+    let white = [0, 1, 2].map(|s| wl.get(s).or_else(|| wl.first()).map(|v| *v as f32 * unit).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(white_default));
 
     let (rows, cols) = match t.tag_uints(&raw, tag::BLACK_LEVEL_REPEAT_DIM).as_slice() {
         [r, c] if (1..=16).contains(r) && (1..=16).contains(c) => (*r as usize, *c as usize),

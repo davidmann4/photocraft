@@ -250,9 +250,14 @@ pub(crate) fn read_plane(t: &Tiff, ifd: &Ifd, limits: &Limits, layout: JpegLayou
         return Err(RawError::unsupported(format!("{bits}-bit floating-point raw samples")));
     }
     let bits = if float { 16 } else { bits };
-    // The floats' white level (default 1.0, DNG 1.7 WhiteLevel) becomes 65535.
-    let float_scale =
-        float.then(|| 65535.0 / t.tag_floats(ifd, tag::WHITE_LEVEL).first().map(|v| *v as f32).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0));
+    // The floats' white level (default 1.0, DNG 1.7 WhiteLevel) becomes 65535. With one level per
+    // sample the highest one does, so no sample clips below its own white level.
+    let float_scale = float.then(|| {
+        let levels = t.tag_floats(ifd, tag::WHITE_LEVEL);
+        let white = levels.iter().map(|v| *v as f32).filter(|v| v.is_finite() && *v > 0.0).reduce(f32::max).unwrap_or(1.0);
+        // A level too small for its scale to stay finite leaves the samples as they are.
+        Some(65535.0 / white).filter(|s| s.is_finite()).unwrap_or(65535.0)
+    });
     if !(1..=16).contains(&bits) {
         return Err(RawError::unsupported(format!("{bits}-bit raw samples")));
     }

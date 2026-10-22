@@ -220,6 +220,11 @@ fn unsupported_raw_falls_back_to_the_embedded_preview() {
 /// IFD0, raw data this reader refuses (here floating-point LinearRaw), and a 40×30 preview
 /// compressed with JPEG XL, stored as the raw is (IFD0 Orientation 6).
 fn dng_with_jxl_preview() -> Vec<u8> {
+    dng_with_jxl_preview_raw(1, Vec::new())
+}
+
+/// [`dng_with_jxl_preview`] with the raw IFD's Compression and extra raw-IFD entries.
+fn dng_with_jxl_preview_raw(compression: u16, raw_extra: Vec<(u16, Val)>) -> Vec<u8> {
     use zune_core::{bit_depth::BitDepth, colorspace::ColorSpace, options::EncoderOptions};
     let thumb = Image::from_u8(8, 6, ChannelLayout::Rgb, vec![90; 8 * 6 * 3]).unwrap();
     let thumb = photocraft_codecs::encode(&thumb, Format::Jpeg, &EncodeOptions::default()).unwrap();
@@ -229,19 +234,21 @@ fn dng_with_jxl_preview() -> Vec<u8> {
     zune_jpegxl::JxlSimpleEncoder::new(&rgb, EncoderOptions::new(w, h, ColorSpace::RGB, BitDepth::Eight)).encode(&mut preview).unwrap();
     let mut t = TiffBuilder::default();
     let raw_strip = t.blob(vec![0; 4 * 4 * 3 * 2]);
-    let raw = t.ifd(vec![
+    let mut raw = vec![
         (254, Val::Long(vec![0])),
         (256, Val::Long(vec![4])),
         (257, Val::Long(vec![4])),
         (258, Val::Short(vec![16, 16, 16])),
-        (259, Val::Short(vec![1])),
+        (259, Val::Short(vec![compression])),
         (262, Val::Short(vec![34892])),
         (273, Val::Blobs(vec![raw_strip])),
         (277, Val::Short(vec![3])),
         (278, Val::Long(vec![4])),
         (279, Val::Long(vec![4 * 4 * 3 * 2])),
         (339, Val::Short(vec![3, 3, 3])),
-    ]);
+    ];
+    raw.extend(raw_extra);
+    let raw = t.ifd(raw);
     let preview_len = preview.len() as u32;
     let preview_strip = t.blob(preview);
     let preview = t.ifd(vec![
@@ -287,6 +294,18 @@ fn unsupported_dng_falls_back_to_its_jpeg_xl_preview() {
     assert_eq!((r.document.size.width, r.document.size.height), (30, 40), "the 40×30 preview, turned upright: {:?}", r.warnings);
     let w = r.warnings.first().map_or("", String::as_str);
     assert!(w.contains("floating-point") && w.contains("40x30 JPEG XL preview"), "{:?}", r.warnings);
+}
+
+/// #8125: Adobe DNG Converter's lossy DNG (floating-point JPEG XL raw data whose colours need
+/// the MapPolynomial in its OpcodeList2, not applied yet) opens its JPEG XL preview rather than
+/// raw data developed with the wrong colours.
+#[test]
+fn lossy_dng_that_needs_map_polynomial_opens_its_jpeg_xl_preview() {
+    let list = photocraft_raw::testgen::map_polynomial_opcode_list([0, 0, 4, 4], &[0.0, 1.2, -0.2]);
+    let r = import("lossy.dng", &dng_with_jxl_preview_raw(52546, vec![(51009, Val::Undefined(list))])).unwrap();
+    assert_eq!((r.document.size.width, r.document.size.height), (30, 40), "{:?}", r.warnings);
+    let w = r.warnings.first().map_or("", String::as_str);
+    assert!(w.contains("MapPolynomial") && w.contains("40x30 JPEG XL preview"), "{:?}", r.warnings);
 }
 
 #[test]
