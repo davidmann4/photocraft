@@ -231,6 +231,33 @@ pub fn apply_preset(f: &mut Map<String, Value>, p: &Preset, units: &UnitsAndRule
     f.insert("__unit".into(), json!(unit));
 }
 
+/// The colour mode of the dialog's `mode` value.
+fn color_mode_of(mode: &str) -> Option<photocraft_color::ColorMode> {
+    use photocraft_color::ColorMode;
+    match mode {
+        "rgb" => Some(ColorMode::Rgb),
+        "gray" | "grayscale" => Some(ColorMode::Grayscale),
+        "cmyk" => Some(ColorMode::Cmyk),
+        "lab" => Some(ColorMode::Lab),
+        _ => None,
+    }
+}
+
+/// The Color Profile menu for a document of colour `space` (#321): the working space (shown with
+/// its profile's description), then the built-in and installed profiles of that space, as
+/// `file.new`'s `profile` values (an id or a path) with their labels.
+fn profile_options(
+    space: Option<photocraft_cms::ColorSpace>,
+    working: &str,
+    installed: &[photocraft_engine::installed_profiles::InstalledProfile],
+) -> Vec<(String, String)> {
+    let mut v = vec![("working".to_string(), crate::i18n::fmt(tl!("Working: {working}"), &[("working", working)]))];
+    let Some(space) = space else { return v };
+    v.extend(photocraft_cms::Builtin::ALL.iter().filter(|b| b.profile().color_space == space).map(|b| (b.id().to_string(), b.description().to_string())));
+    v.extend(installed.iter().filter(|i| i.is_destination() && i.color_space == space).map(|i| (i.path.clone(), i.description.clone())));
+    v
+}
+
 /// Fields `file.new` takes (drops the dialog's `__` UI keys).
 pub fn command_params(f: &Map<String, Value>) -> Value {
     Value::Object(f.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())).collect())
@@ -319,6 +346,8 @@ pub fn apply_saved_preset(f: &mut Map<String, Value>, preset: &photocraft_engine
 /// Restore every setting of a saved or recent document (all but its name).
 pub fn apply_settings(f: &mut Map<String, Value>, settings: &DocumentSettings) {
     f.remove("backgroundColor");
+    // A preset without a Color Profile is on the working space, whatever was picked before.
+    f.remove("profile");
     if let Some(params) = settings.command_params().as_object() {
         f.extend(params.clone());
     }
@@ -633,7 +662,7 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
             small_label(ui, tl!("Width"));
             ui.horizontal(|ui| {
                 let mut w = shown_size(f, "width", 1920.0, &unit, ppi);
-                if widgets::value_field_units(ui, &mut w, 0.01..=300_000.0, 110.0, widgets::unit_decimals(&unit), units).changed() {
+                if widgets::value_field_units(ui, &mut w, 0.0..=300_000.0, 110.0, widgets::unit_decimals(&unit), units).changed() {
                     set_size(f, "width", w, &unit, ppi);
                 }
                 let opts: Vec<(String, &str)> = UNITS.iter().map(|u| (u.0.to_string(), u.1)).collect();
@@ -645,7 +674,7 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
             small_label(ui, tl!("Height"));
             ui.horizontal(|ui| {
                 let mut h = shown_size(f, "height", 1080.0, &unit, ppi);
-                if widgets::value_field_units(ui, &mut h, 0.01..=300_000.0, 110.0, widgets::unit_decimals(&unit), units).changed() {
+                if widgets::value_field_units(ui, &mut h, 0.0..=300_000.0, 110.0, widgets::unit_decimals(&unit), units).changed() {
                     set_size(f, "height", h, &unit, ppi);
                 }
                 ui.add_space(6.0);
@@ -695,6 +724,8 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
                     110.0,
                 ) {
                     f.insert("mode".into(), json!(mode));
+                    // A profile of the old mode's colour space doesn't suit the new one.
+                    f.remove("profile");
                     f.remove("__savedPreset");
                 }
                 let mut depth = f.get("depth").and_then(Value::as_u64).unwrap_or(8);
@@ -704,6 +735,32 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
                     f.remove("__savedPreset");
                 }
             });
+            ui.add_space(4.0);
+            // Photoshop's Advanced Options › Color Profile (#321): the working space by default,
+            // or another profile of the mode's colour space, built in or installed in the system.
+            small_label(ui, tl!("Color Profile"));
+            {
+                let mode = get_s(f, "mode", "rgb");
+                let space = color_mode_of(&mode).map(photocraft_engine::color_cmds::mode_space);
+                let working = color_mode_of(&mode).map(|m| app.session.color.working(m).description.clone()).unwrap_or_default();
+                let installed = photocraft_engine::installed_profiles::installed();
+                let opts = profile_options(space, &working, &installed);
+                let mut profile = get_s(f, "profile", "working");
+                if !opts.iter().any(|(v, _)| *v == profile) {
+                    // Not a profile of this mode (or no longer installed): Create must not send it.
+                    profile = "working".into();
+                    f.remove("profile");
+                }
+                let shown: Vec<(String, &str)> = opts.iter().map(|(v, l)| (v.clone(), l.as_str())).collect();
+                if widgets::dropdown(ui, "nd-profile", &mut profile, &shown, 240.0) {
+                    if profile == "working" {
+                        f.remove("profile");
+                    } else {
+                        f.insert("profile".into(), json!(profile));
+                    }
+                    f.remove("__savedPreset");
+                }
+            }
             ui.add_space(4.0);
             small_label(ui, tl!("Background Contents"));
             // A custom colour is kept as its "#rrggbb", which `file.new` takes as is (#4789).
@@ -768,6 +825,55 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
 mod tests {
     use super::*;
 
+    /// #321: New Document offers the working space and the other profiles of the mode's space.
+    #[test]
+    fn color_profile_menu_lists_the_profiles_of_the_modes_space() {
+        use photocraft_cms::{Builtin, ColorSpace, ProfileClass};
+        use photocraft_engine::installed_profiles::InstalledProfile;
+        let installed = [
+            InstalledProfile { path: "press.icc".into(), description: "Press".into(), class: ProfileClass::Output, color_space: ColorSpace::Cmyk },
+            InstalledProfile { path: "panel.icc".into(), description: "Panel".into(), class: ProfileClass::Display, color_space: ColorSpace::Rgb },
+        ];
+        let values = |mode: &str| {
+            profile_options(color_mode_of(mode).map(photocraft_engine::color_cmds::mode_space), "sRGB", &installed)
+                .into_iter()
+                .map(|(v, _)| v)
+                .collect::<Vec<_>>()
+        };
+        let rgb = values("rgb");
+        assert_eq!(rgb[0], "working");
+        assert!(rgb.contains(&Builtin::AdobeRgbCompat.id().to_string()) && rgb.contains(&"panel.icc".to_string()));
+        assert!(!rgb.contains(&Builtin::CoatedCmyk.id().to_string()) && !rgb.contains(&"press.icc".to_string()));
+        let cmyk = values("cmyk");
+        assert!(cmyk.contains(&"press.icc".to_string()) && !cmyk.contains(&Builtin::Srgb.id().to_string()));
+        assert!(profile_options(None, "sRGB", &installed).len() == 1, "an unknown mode offers only the working space");
+        // Every entry is one `file.new` takes for that mode.
+        for mode in ["rgb", "gray", "cmyk", "lab"] {
+            for v in values(mode).into_iter().filter(|v| !v.ends_with(".icc")) {
+                let mut s = photocraft_engine::Session::new();
+                s.execute("file.new", json!({"width": 2, "height": 2, "mode": mode, "profile": v})).unwrap_or_else(|e| panic!("{mode} {v}: {e}"));
+            }
+        }
+    }
+
+    /// A saved preset replaces the Color Profile picked before: its own, or the working space.
+    #[test]
+    fn applying_a_preset_replaces_the_picked_profile() {
+        let mut s = photocraft_engine::Session::new();
+        let base = json!({"width": 8, "height": 8, "mode": "cmyk", "unit": "px"});
+        s.execute("document.presets.save", json!({"name": "Plain", "settings": base})).unwrap();
+        let mut press = base.clone();
+        press["profile"] = json!("coated-cmyk");
+        s.execute("document.presets.save", json!({"name": "Press", "settings": press})).unwrap();
+        let mut f = Map::new();
+        f.insert("profile".into(), json!(photocraft_cms::Builtin::AdobeRgbCompat.id()));
+        apply_saved_preset(&mut f, &s.presets.documents[0]);
+        assert!(!f.contains_key("profile"), "{f:?}");
+        assert!(s.execute("file.new", command_params(&f)).is_ok());
+        apply_saved_preset(&mut f, &s.presets.documents[1]);
+        assert_eq!(f["profile"], "coated-cmyk");
+    }
+
     #[test]
     fn units_round_trip_through_pixels() {
         assert_eq!(to_unit(2100.0, "in", 300.0), 7.0);
@@ -794,6 +900,30 @@ mod tests {
         set_size(&mut f, "width", 300_000.0, "mm", 72.0);
         assert_eq!(command_params(&f)["width"], json!(300_000));
         assert_eq!(shown_size(&f, "width", 1920.0, "mm", 72.0), to_unit(300_000.0, "mm", 72.0));
+    }
+
+    /// #5661: 1 px at 300 ppi is 0.0033 in. Showing it in inches clamped the field to 0.01 in and
+    /// turned the width into 3 px without an edit.
+    #[test]
+    fn tiny_size_in_inches_is_not_changed_by_showing_it() {
+        use egui_kittest::Harness;
+        let app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let mut f = crate::state::UiState::new_document_fields();
+        for (k, v) in [("width", json!(1)), ("height", json!(1)), ("resolution", json!(300.0)), ("__unit", json!("in"))] {
+            f.insert(k.into(), v);
+        }
+        let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(
+            |ui, (app, f): &mut (crate::PhotocraftApp, Map<String, Value>)| {
+                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    body(app, ui, f);
+                }
+            },
+            (app, f),
+        );
+        crate::PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.run_steps(3);
+        let p = command_params(&h.state().1);
+        assert_eq!((p["width"].as_u64(), p["height"].as_u64()), (Some(1), Some(1)));
     }
 
     /// #1147: the Orientation buttons swap the typed values too: 841 x 1189 mm becomes 1189 x 841.
@@ -920,6 +1050,7 @@ mod tests {
             depth: 8,
             background: "white".into(),
             background_color: None,
+            profile: None,
             unit: "px".into(),
             resolution_unit: "in".into(),
         };
