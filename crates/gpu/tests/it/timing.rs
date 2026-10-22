@@ -291,6 +291,7 @@ fn a_failed_refresh_that_recorded_nothing_keeps_the_timer_alive() {
 /// measurement's timestamps were still in flight.
 #[test]
 fn an_out_of_memory_refresh_does_not_stop_gpu_timing() {
+    let _lock = crate::GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some((device, queue, mut comp)) = gpu() else { return };
     let doc = document(Size::new(640, 480));
     let full = doc.bounds();
