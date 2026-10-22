@@ -32,12 +32,11 @@ the same session, nothing else running.
 | 4000 × 3000 → 3600, 4 ch | 1424.7 | 1132.9 | −20.5 % | identical |
 | 6000 × 4000 → 5400, 4 ch | 3009.3 | 2559.4 | −15.0 % | identical |
 | 7200 × 5000 → 6480, 4 ch | 4352.8 | 3766.9 | −13.5 % | identical |
-| 6000 × 4000 → 5400, 3 ch | 1276.8 | 1279.7 | ±0.2 % (noise) | identical |
 
-The map was 24 MB next to a 36 MB pixel buffer at 24 MP, so it costs most where the pixel rows are
-widest per seam; the 3-channel case has the same map against a smaller buffer and the saving is
-inside the noise. Further seam-search savings have to come from the dynamic program itself, not from
-bookkeeping.
+The map was 24 MB next to a 36 MB pixel buffer at 24 MP, so the saving tracks how many bytes of row
+the seams have to shift. A three-channel case was measured too and moved inside the timer noise, so
+it is not reported as a win here. Further seam-search savings have to come from the dynamic program
+itself, not from bookkeeping.
 
 ## P28's recorded number is stale
 
@@ -65,7 +64,7 @@ under 3 s, and delete this paragraph with it.
 
 ```sh
 cargo build --release -p photocraft-algo --example bench_seam
-./target/release/examples/bench_seam 6000 4000 5400 4   # width height new_width channels
+./target/release/examples/bench_seam 6000 4000 5400 4   # width height new_width channels (1..=4)
 ```
 
 Build the base and the changed tree with separate `CARGO_TARGET_DIR`s and run the same line in both;
