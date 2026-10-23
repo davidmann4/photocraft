@@ -100,6 +100,8 @@ impl Headless {
                 files::open_bytes(name, &bytes)?
             }
         };
+        // Preferences › Raw Defaults › Resolution, as the app's File › Open applies it.
+        file_cmds::raw_defaults(&self.session, &o.warnings, &mut o.document);
         let path = match file_cmds::template_name(&self.session, requested) {
             Some(untitled) => {
                 o.document.name = untitled;
@@ -169,10 +171,16 @@ impl Headless {
                 _ => return Err(AutomationError::BadRequest("automation filesystem access is not granted: write authority is absent".into())),
             };
             let mut outputs = workspace.export_sequence(dir)?;
-            let written = file_cmds::export_layers_with(&this.session, params, |name, bytes| {
+            let report = file_cmds::export_layers_report_with(&this.session, params, |name, bytes| {
                 outputs.write(name, bytes).map_err(|e| photocraft_engine::EngineError::Other(e.to_string()))
             });
-            exported(dir, written, &mut outputs)
+            let (written, skipped) = match report {
+                Ok(report) => (Ok(report.files), report.skipped),
+                Err(error) => (Err(error), Vec::new()),
+            };
+            let mut result = exported(dir, written, &mut outputs)?;
+            result["skipped"] = json!(skipped);
+            Ok(result)
         })
     }
 
@@ -259,7 +267,10 @@ impl Headless {
                 files::save(&doc, &target, format, opts, Some(writer))?
             }
             Filesystem::Workspace(workspace) => {
-                let (bytes, warnings) = files::save_bytes(&doc, target_text, format, opts)?;
+                // Only the target is granted: a linked smart object's stored path is document
+                // data, so PSD export writes that layer as pixels instead of embedding the file.
+                let opts = ExportOptions { read_linked_files: false, ..opts.clone() };
+                let (bytes, warnings) = files::save_bytes(&doc, target_text, format, &opts)?;
                 workspace.write(target_text, &bytes)?;
                 warnings
             }
