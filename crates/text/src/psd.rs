@@ -32,12 +32,21 @@ pub struct TySh {
     pub bounds: [f32; 4],
 }
 
+/// Whether a type transform can reach rendering or egui. Pixel coordinates use i32 throughout
+/// the document, so non-finite and unrepresentable affine terms are rejected (#4758).
+pub fn transform_is_safe(t: &Affine) -> bool {
+    t.m.iter().all(|v| v.is_finite() && v.abs() <= f64::from(i32::MAX))
+}
+
 /// Parses a `TySh` block.
 pub fn parse_tysh(data: &[u8]) -> Option<TySh> {
     let f = |at: usize| data.get(at..at + 8).map(|b| f64::from_be_bytes(b.try_into().unwrap_or([0; 8])));
     let mut m = [0.0; 6];
     for (i, v) in m.iter_mut().enumerate() {
         *v = f(2 + i * 8)?;
+    }
+    if !transform_is_safe(&Affine { m }) {
+        return None;
     }
     let (text, used) = VersionedDescriptor::parse_prefix(data.get(52..)?).ok()?;
     let rest = data.get(52 + used..).unwrap_or(&[]);
@@ -426,15 +435,22 @@ fn descriptor_rect(text: &Descriptor, key: &str) -> Option<[f64; 4]> {
     (bounds.iter().all(|v| v.is_finite()) && bounds[2] > bounds[0] && bounds[3] > bounds[1]).then_some(bounds)
 }
 
+const MAX_ENGINE_RUNS: usize = 65_536;
+
 pub(crate) fn arr_f(v: Option<&E>) -> Vec<f64> {
-    v.and_then(E::as_array).map(|a| a.iter().filter_map(E::as_f64).collect()).unwrap_or_default()
+    v.and_then(E::as_array).map(|a| a.iter().take(MAX_ENGINE_RUNS).filter_map(E::as_f64).collect()).unwrap_or_default()
 }
 
-/// Converts UTF-16 run lengths over `text` into UTF-8 byte lengths.
+/// Converts UTF-16 run lengths over `text` into UTF-8 byte lengths, stopping after the first run
+/// once `text` is exhausted so trailing runs past the text aren't processed.
 pub(crate) fn utf16_to_byte_lengths(text: &str, lens: &[f64]) -> Vec<usize> {
-    let mut out = Vec::with_capacity(lens.len());
+    let mut out = Vec::with_capacity(lens.len().min(text.len().saturating_add(1)));
     let mut chars = text.chars().peekable();
-    for &l in lens {
+    let mut exhausted = false;
+    for &l in lens.iter().take(MAX_ENGINE_RUNS) {
+        if exhausted {
+            break;
+        }
         let mut units = l.max(0.0) as usize;
         let mut bytes = 0;
         while units > 0 {
@@ -443,8 +459,14 @@ pub(crate) fn utf16_to_byte_lengths(text: &str, lens: &[f64]) -> Vec<usize> {
                     units = units.saturating_sub(c.len_utf16());
                     bytes += c.len_utf8();
                 }
-                None => break,
+                None => {
+                    exhausted = true;
+                    break;
+                }
             }
+        }
+        if chars.peek().is_none() {
+            exhausted = true;
         }
         out.push(bytes);
     }
@@ -486,17 +508,22 @@ fn apply_engine_data(layer: &mut TextLayer, e: &E, txt: Option<&str>, k: f32) {
 
     // Paragraph runs first: a character run's defaults depend on its paragraph.
     let prun = e.path(&["EngineDict", "ParagraphRun"]);
-    let psheets: Vec<&E> =
-        prun.and_then(|r| r.get("RunArray")).and_then(E::as_array).map(|a| a.iter().filter_map(|x| x.get("ParagraphSheet")).collect()).unwrap_or_default();
     let plens16 = arr_f(prun.and_then(|r| r.get("RunLengthArray")));
     let plens = utf16_to_byte_lengths(&ed_text, &plens16);
+    let max_pruns = plens.len().max(1);
+    let psheets: Vec<&E> = prun
+        .and_then(|r| r.get("RunArray"))
+        .and_then(E::as_array)
+        .map(|a| a.iter().filter_map(|x| x.get("ParagraphSheet")).take(max_pruns).collect())
+        .unwrap_or_default();
+    let plens16 = &plens16[..plens16.len().min(psheets.len())];
     let empty = E::Dict(Vec::new());
-    // Per paragraph run: its merged base properties and its default character style.
-    let para_bases: Vec<(E, Option<&E>)> = psheets
+    // Per paragraph run: its borrowed base property layers and its default character style.
+    let para_bases: Vec<([Option<&E>; 2], Option<&E>)> = psheets
         .iter()
         .map(|sheet| {
             let style = named(para_set, sheet).and_then(|i| para_set.get(i));
-            let base = merged(&[style.and_then(|s| s.get("Properties")), normal_para.and_then(|s| s.get("Properties"))]);
+            let base = [style.and_then(|s| s.get("Properties")), normal_para.and_then(|s| s.get("Properties"))];
             let char_default = [Some(*sheet), style]
                 .into_iter()
                 .flatten()
@@ -508,15 +535,19 @@ fn apply_engine_data(layer: &mut TextLayer, e: &E, txt: Option<&str>, k: f32) {
         .iter()
         .zip(&para_bases)
         .zip(plens)
-        .map(|((sheet, (base, _)), len)| ParagraphRun { len, style: para_style(Some(base), sheet.get("Properties").unwrap_or(&empty), k) })
+        .map(|((sheet, (base, _)), len)| ParagraphRun { len, style: para_style(base, sheet.get("Properties").unwrap_or(&empty), k) })
         .collect();
 
     // Character runs.
     let srun = e.path(&["EngineDict", "StyleRun"]);
-    let ssheets: Vec<&E> =
-        srun.and_then(|r| r.get("RunArray")).and_then(E::as_array).map(|a| a.iter().filter_map(|x| x.get("StyleSheet")).collect()).unwrap_or_default();
     let slens16 = arr_f(srun.and_then(|r| r.get("RunLengthArray")));
     let slens = utf16_to_byte_lengths(&ed_text, &slens16);
+    let max_sruns = slens.len().max(1);
+    let ssheets: Vec<&E> = srun
+        .and_then(|r| r.get("RunArray"))
+        .and_then(E::as_array)
+        .map(|a| a.iter().filter_map(|x| x.get("StyleSheet")).take(max_sruns).collect())
+        .unwrap_or_default();
     // The paragraph run each character run starts in (UTF-16 offsets).
     let para_of = |at: f64| -> Option<usize> {
         let mut end = 0.0;
@@ -529,14 +560,14 @@ fn apply_engine_data(layer: &mut TextLayer, e: &E, txt: Option<&str>, k: f32) {
         plens16.len().checked_sub(1)
     };
     let mut at16 = 0.0;
-    let bases: Vec<E> = ssheets
+    let bases: Vec<[Option<&E>; 3]> = ssheets
         .iter()
         .enumerate()
         .map(|(i, sheet)| {
             let own = named(style_set, sheet).and_then(|i| style_set.get(i));
             let para_default = para_of(at16).and_then(|p| para_bases.get(p)).and_then(|(_, c)| *c);
             at16 += slens16.get(i).copied().unwrap_or(0.0);
-            merged(&[own, para_default, normal_style].map(|s| s.and_then(|s| s.get("StyleSheetData"))))
+            [own, para_default, normal_style].map(|s| s.and_then(|s| s.get("StyleSheetData")))
         })
         .collect();
     let sdata: Vec<&E> = ssheets.iter().map(|s| s.get("StyleSheetData").unwrap_or(&empty)).collect();
@@ -545,12 +576,12 @@ fn apply_engine_data(layer: &mut TextLayer, e: &E, txt: Option<&str>, k: f32) {
         .zip(&bases)
         .zip(&slens)
         .map(|((d, base), len)| {
-            let auto = lookup(d, Some(base), "AutoKerning").and_then(E::as_bool) != Some(false);
-            let kern = lookup(d, Some(base), "Kerning").and_then(E::as_f64).filter(|v| v.is_finite()).unwrap_or(0.0) as f32;
+            let auto = lookup(d, base, "AutoKerning").and_then(E::as_bool) != Some(false);
+            let kern = lookup(d, base, "Kerning").and_then(E::as_f64).filter(|v| v.is_finite()).unwrap_or(0.0) as f32;
             (*len, auto, kern)
         })
         .collect();
-    layer.runs = sdata.iter().zip(&bases).zip(slens).map(|((d, base), len)| TextRun { len, style: char_style(Some(base), d, &fonts, k) }).collect();
+    layer.runs = sdata.iter().zip(&bases).zip(slens).map(|((d, base), len)| TextRun { len, style: char_style(base, d, &fonts, k) }).collect();
     layer.runs = kerning_from_pairs(&layer.text, layer.char_runs(), &incoming);
 
     // Shape.
@@ -565,26 +596,11 @@ fn apply_engine_data(layer: &mut TextLayer, e: &E, txt: Option<&str>, k: f32) {
     }
 }
 
-/// The dictionaries in `levels` as one: a key comes from the first level that has it.
-fn merged(levels: &[Option<&E>]) -> E {
-    let mut out: Vec<(String, E)> = Vec::new();
-    for level in levels.iter().flatten() {
-        if let E::Dict(kv) = level {
-            for (k, v) in kv {
-                if !out.iter().any(|(o, _)| o == k) {
-                    out.push((k.clone(), v.clone()));
-                }
-            }
-        }
-    }
-    E::Dict(out)
+fn lookup<'a>(run: &'a E, base: &[Option<&'a E>], key: &str) -> Option<&'a E> {
+    run.get(key).or_else(|| base.iter().flatten().find_map(|b| b.get(key)))
 }
 
-fn lookup<'a>(run: &'a E, base: Option<&'a E>, key: &str) -> Option<&'a E> {
-    run.get(key).or_else(|| base.and_then(|b| b.get(key)))
-}
-
-pub(crate) fn char_style(base: Option<&E>, d: &E, fonts: &[String], k: f32) -> CharStyle {
+pub(crate) fn char_style(base: &[Option<&E>], d: &E, fonts: &[String], k: f32) -> CharStyle {
     let g = |key: &str| lookup(d, base, key);
     let num = |key: &str| g(key).and_then(E::as_f64);
     // An f32 that a huge finite f64 overflowed to infinity is dropped too.
@@ -649,7 +665,7 @@ pub(crate) fn char_style(base: Option<&E>, d: &E, fonts: &[String], k: f32) -> C
     s
 }
 
-pub(crate) fn para_style(base: Option<&E>, d: &E, k: f32) -> ParagraphStyle {
+pub(crate) fn para_style(base: &[Option<&E>], d: &E, k: f32) -> ParagraphStyle {
     let num = |key: &str| lookup(d, base, key).and_then(E::as_f64);
     let numk = |key: &str, k: f32| num(key).map(|v| v as f32 * k).filter(|v| v.is_finite());
     ParagraphStyle {
@@ -1104,6 +1120,14 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
     let prev = previous.and_then(parse_txt2);
     let prev_objects: &[E] = prev.as_ref().and_then(|p| p.path(&["1", "1"]).and_then(E::as_array)).unwrap_or(&[]);
     let mut slots: Vec<E> = prev_objects.to_vec();
+    // The older Photoshop's objects (#6971): named keys at `/DocumentObjects /TextObjects`
+    // instead of the numbered `/1 /1`, one entry per layer by `TextIndex` position (the same
+    // numbering the slots take), its text under `Model /Text` and its run lengths under `/Length`.
+    // Photoshop re-renders a type layer from this copy when the file has one, so an edit that
+    // left the old text here showed the old text back on reopen. The entries are only ever edited
+    // in place, never grown: a layer the block has no entry for has no stale copy to fix.
+    let mut td: Option<Vec<E>> = prev.as_ref().and_then(|p| p.path(&["DocumentObjects", "TextObjects"])).and_then(E::as_array).map(<[E]>::to_vec);
+    let mut td_changed = false;
     let mut fonts: Vec<E> = prev.as_ref().and_then(|p| p.path(&["0", "1", "0"]).and_then(E::as_array)).map(<[E]>::to_vec).unwrap_or_default();
     let fonts_before = fonts.len();
     // Looked up once per save, not per layer: a crafted block with many objects must not cost
@@ -1118,6 +1142,21 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
         let text = format!("{}\r", layer.text.replace('\n', "\r"));
         let modes = txt2_mode_runs(layer);
         let at = *index as usize;
+        // The older Photoshop's copy of this object (#6971), refitted like the numbered one
+        // below. The entry's own text is the check, so a file a previous save left with a stale
+        // copy beside a current `/1 /1` object is repaired here too.
+        if let Some(entries) = td.as_mut() {
+            let fixed = match entries.get(at) {
+                Some(entry) if entry.path(&["Model", "Text"]).and_then(E::as_str) != Some(text.as_str()) => td_edited_object(entry, &text),
+                _ => None,
+            };
+            if let Some(fixed) = fixed
+                && let Some(slot) = entries.get_mut(at)
+            {
+                *slot = fixed;
+                td_changed = true;
+            }
+        }
         // A stub an earlier save wrote beside Photoshop's objects counts as no object at all, so
         // it is replaced like a missing one (below) and re-saving such a file repairs it, whether
         // or not the layer's text changed.
@@ -1182,6 +1221,14 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
         Some(objs @ E::Dict(_)) => objs.set("1", E::Array(slots)),
         _ => outer.set("1", E::Dict(vec![("1".into(), E::Array(slots))])),
     }
+    // The older Photoshop's objects, whatever the loop fixed in them (an untouched list is left
+    // exactly as the file has it, so the byte-for-byte return below still holds).
+    if td_changed
+        && let Some(entries) = td
+        && let Some(objects @ E::Dict(_)) = outer.get_mut("DocumentObjects")
+    {
+        objects.set("TextObjects", E::Array(entries));
+    }
     // Nothing changed: the file's own bytes (writing them back would re-encode strings and numbers).
     if let (Some(bytes), Some(p)) = (previous, &prev)
         && *p == outer
@@ -1199,6 +1246,12 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
 /// own objects hold a few hundred (611 at most in the file from #7698).
 const TEMPLATE_NODES: usize = 4096;
 
+/// Cumulative node and byte budgets across all run dictionaries cloned while refitting one `Txt2`
+/// object (`runs_per` and `runs_to_length`), so an edited object with a large preserved run and
+/// many output paragraphs falls back to a fresh object instead of amplifying memory.
+const MAX_REFIT_RUN_NODES: usize = 16_384;
+const MAX_REFIT_RUN_BYTES: usize = 1 << 20;
+
 /// Whether `v` holds at most `budget` values, counting down `budget` (stops at the first one over).
 fn fits(v: &E, budget: &mut usize) -> bool {
     let Some(left) = budget.checked_sub(1) else { return false };
@@ -1206,6 +1259,27 @@ fn fits(v: &E, budget: &mut usize) -> bool {
     match v {
         E::Dict(items) => items.iter().all(|(_, x)| fits(x, budget)),
         E::Array(items) => items.iter().all(|x| fits(x, budget)),
+        _ => true,
+    }
+}
+
+/// Whether `v` fits within the remaining `(nodes, bytes)` budget, deducting its nodes and string
+/// bytes as it walks.
+fn fits_budget(v: &E, nodes: &mut usize, bytes: &mut usize) -> bool {
+    let Some(left) = nodes.checked_sub(1) else { return false };
+    *nodes = left;
+    match v {
+        E::Dict(items) => items.iter().all(|(k, x)| {
+            let Some(rem) = bytes.checked_sub(k.len()) else { return false };
+            *bytes = rem;
+            fits_budget(x, nodes, bytes)
+        }),
+        E::Array(items) => items.iter().all(|x| fits_budget(x, nodes, bytes)),
+        E::String(s) | E::Name(s) => {
+            let Some(rem) = bytes.checked_sub(s.len()) else { return false };
+            *bytes = rem;
+            true
+        }
         _ => true,
     }
 }
@@ -1237,7 +1311,8 @@ fn new_object(template: &E, at: usize, text: &str) -> Option<E> {
         }
     }
     if let Some(runs) = view.path(&["1", "0"]).and_then(E::as_array) {
-        let fitted = runs_per(runs, &paragraphs)?;
+        let (mut nodes, mut bytes) = (MAX_REFIT_RUN_NODES, MAX_REFIT_RUN_BYTES);
+        let fitted = runs_per(runs, &paragraphs, "1", &mut nodes, &mut bytes)?;
         view.get_mut("1")?.set("0", E::Array(fitted));
     }
     Some(object)
@@ -1282,6 +1357,7 @@ fn edited_object(object: &E, text: &str) -> Option<E> {
     let total = utf16_len(text) as usize;
     let paragraphs: Vec<usize> = text.split_inclusive('\r').map(|p| p.encode_utf16().count()).collect();
     let E::Dict(entries) = model else { return None };
+    let (mut nodes, mut bytes) = (MAX_REFIT_RUN_NODES, MAX_REFIT_RUN_BYTES);
     for (key, value) in entries.iter_mut() {
         if key.as_str() == "0" {
             *value = E::String(text.to_string());
@@ -1290,36 +1366,98 @@ fn edited_object(object: &E, text: &str) -> Option<E> {
         let Some(runs) = value.get("0").and_then(E::as_array).filter(|r| r.iter().all(|x| matches!(x, E::Dict(_)) && x.get("1").is_some())) else {
             continue;
         };
-        let fitted = if key.as_str() == "5" { runs_per(runs, &paragraphs)? } else { runs_to_length(runs, total)? };
+        let fitted = if key.as_str() == "5" {
+            runs_per(runs, &paragraphs, "1", &mut nodes, &mut bytes)?
+        } else {
+            runs_to_length(runs, total, "1", &mut nodes, &mut bytes)?
+        };
         value.set("0", E::Array(fitted));
     }
     Some(object)
 }
 
-/// `runs` (`<< … /1 length >>`) remade with the lengths `lens`: run i keeps the content of the
-/// file's run i, else of its last one. `None` for an empty `runs`.
-fn runs_per(runs: &[E], lens: &[usize]) -> Option<Vec<E>> {
+/// The older Photoshop's `Txt2` text object `object` (`<< /Model << /Text … /ParagraphRun … >>
+/// /View … >>`) for the changed engine text `text` (`\r` breaks, trailing `\r`): the model's text
+/// replaced and every run array of the model refitted the way [`edited_object`] refits the
+/// numbered objects' — the paragraph runs (`/ParagraphRun`) one per paragraph of the new text, the
+/// others (`/StyleRun`, `/KernRun`, …) cut or extended to the new total. The model's other keys,
+/// the view and the rest are kept: these blocks (the objects at `/DocumentObjects /TextObjects`
+/// that older Photoshop versions write and re-render from, #6971) name their keys and number
+/// their runs with `/Length` in UTF-16 units instead of `/1`. `None` when the object or one of
+/// its run arrays isn't shaped as Photoshop writes it: the caller then leaves the entry as the
+/// file has it, rather than write text its runs don't cover (#6968).
+fn td_edited_object(object: &E, text: &str) -> Option<E> {
+    let mut object = object.clone();
+    let model = object.get_mut("Model").filter(|m| matches!(m, E::Dict(_)))?;
+    let E::Dict(entries) = model else { return None };
+    // The text must be there to replace: refitted runs over a text the model doesn't hold would
+    // be a half-edited object.
+    if !entries.iter().any(|(k, v)| k == "Text" && matches!(v, E::String(_))) {
+        return None;
+    }
+    let total = utf16_len(text) as usize;
+    let paragraphs: Vec<usize> = text.split_inclusive('\r').map(|p| p.encode_utf16().count()).collect();
+    let (mut nodes, mut bytes) = (MAX_REFIT_RUN_NODES, MAX_REFIT_RUN_BYTES);
+    for (key, value) in entries.iter_mut() {
+        if key.as_str() == "Text" {
+            *value = E::String(text.to_string());
+            continue;
+        }
+        if !matches!(value, E::Dict(_)) {
+            continue;
+        }
+        // A model dict without `RunArray` isn't a run array (the view's keys live elsewhere), so
+        // it is skipped; a named `RunArray` is unambiguous — malformed, the whole entry is left to
+        // the file rather than half-updated.
+        let Some(runs) = value.get("RunArray") else { continue };
+        let fitted = match runs {
+            E::Array(runs) if runs.iter().all(|x| matches!(x, E::Dict(_)) && x.get("Length").is_some()) => {
+                if key.as_str() == "ParagraphRun" {
+                    runs_per(runs, &paragraphs, "Length", &mut nodes, &mut bytes)?
+                } else {
+                    runs_to_length(runs, total, "Length", &mut nodes, &mut bytes)?
+                }
+            }
+            _ => return None,
+        };
+        value.set("RunArray", E::Array(fitted));
+    }
+    Some(object)
+}
+
+/// `runs` (`<< … /1 length >>`, the length key named `len_key`) remade with the lengths `lens`:
+/// run i keeps the content of the file's run i, else of its last one. `None` for an empty `runs`
+/// or when the cumulative `nodes` / `bytes` budget is exceeded.
+fn runs_per(runs: &[E], lens: &[usize], len_key: &str, nodes: &mut usize, bytes: &mut usize) -> Option<Vec<E>> {
     let last = runs.last()?;
     lens.iter()
         .enumerate()
         .map(|(i, &len)| {
-            let mut r = runs.get(i).unwrap_or(last).clone();
-            r.set("1", E::Int(i64::try_from(len).ok()?));
+            let src = runs.get(i).unwrap_or(last);
+            if !fits_budget(src, nodes, bytes) {
+                return None;
+            }
+            let mut r = src.clone();
+            r.set(len_key, E::Int(i64::try_from(len).ok()?));
             Some(r)
         })
         .collect()
 }
 
-/// `runs` (`<< … /1 length >>`) covering `total` UTF-16 units: the leading runs as they were, cut
-/// where `total` ends, the last kept run extended when `total` is longer. Empty runs are dropped.
-/// `None` when `runs` is empty or a length isn't a count.
-fn runs_to_length(runs: &[E], total: usize) -> Option<Vec<E>> {
+/// `runs` (`<< … /1 length >>`, the length key named `len_key`) covering `total` UTF-16 units:
+/// the leading runs as they were, cut where `total` ends, the last kept run extended when `total`
+/// is longer. Empty runs are dropped. `None` when `runs` is empty, a length isn't a count, or the
+/// cumulative `nodes` / `bytes` budget is exceeded.
+fn runs_to_length(runs: &[E], total: usize, len_key: &str, nodes: &mut usize, bytes: &mut usize) -> Option<Vec<E>> {
     let mut out: Vec<(E, usize)> = Vec::new();
     let mut left = total;
     for r in runs {
-        let len = r.get("1").and_then(E::as_i64).and_then(|l| usize::try_from(l).ok())?;
+        let len = r.get(len_key).and_then(E::as_i64).and_then(|l| usize::try_from(l).ok())?;
         let take = len.min(left);
         if take > 0 {
+            if !fits_budget(r, nodes, bytes) {
+                return None;
+            }
             out.push((r.clone(), take));
             left -= take;
         }
@@ -1327,12 +1465,18 @@ fn runs_to_length(runs: &[E], total: usize) -> Option<Vec<E>> {
     if left > 0 {
         match out.last_mut() {
             Some(last) => last.1 = last.1.checked_add(left)?,
-            None => out.push((runs.last()?.clone(), left)),
+            None => {
+                let last = runs.last()?;
+                if !fits_budget(last, nodes, bytes) {
+                    return None;
+                }
+                out.push((last.clone(), left));
+            }
         }
     }
     out.into_iter()
         .map(|(mut r, len)| {
-            r.set("1", E::Int(i64::try_from(len).ok()?));
+            r.set(len_key, E::Int(i64::try_from(len).ok()?));
             Some(r)
         })
         .collect()
@@ -1663,6 +1807,45 @@ pub fn build_tysh(layer: &TextLayer, dpi: f32, ink: Option<[f32; 4]>) -> Vec<u8>
 }
 
 #[cfg(test)]
+mod run_length_safety_tests {
+    use super::*;
+
+    #[test]
+    fn utf16_lengths_stop_after_text_is_consumed() {
+        assert_eq!(utf16_to_byte_lengths("é😀", &[1.0, 2.0, 1.0, 1.0e300]), [2, 4]);
+        assert_eq!(utf16_to_byte_lengths("", &[1.0, 1.0e300]), [0]);
+        assert_eq!(utf16_to_byte_lengths("abc", &[0.0, 1.0, 0.0, 1.0, 1.0, 1.0e300]), [0, 1, 0, 1, 1]);
+        let zero_runs = vec![0.0; MAX_ENGINE_RUNS + 1];
+        assert_eq!(utf16_to_byte_lengths("a", &zero_runs).len(), MAX_ENGINE_RUNS);
+    }
+
+    #[test]
+    fn engine_run_length_array_conversion_is_bounded() {
+        let values = E::Array(vec![E::Real(0.0); MAX_ENGINE_RUNS + 1]);
+        assert_eq!(arr_f(Some(&values)).len(), MAX_ENGINE_RUNS);
+    }
+}
+
+#[cfg(test)]
+mod transform_safety_tests {
+    use super::*;
+
+    #[test]
+    fn unsafe_affine_terms_are_not_editable_type() {
+        let mut t = TySh { transform: Affine::IDENTITY, text: Descriptor::new("TxLr"), warp: None, bounds: [0.0; 4] };
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1.315776645269349e62, 1.4759871577491642e307] {
+            for i in 0..6 {
+                t.transform = Affine::IDENTITY;
+                t.transform.m[i] = bad;
+                assert!(parse_tysh(&write_tysh(&t)).is_none(), "term {i}: {bad}");
+            }
+        }
+        t.transform = Affine { m: [0.0, -2.01242653341062, 2.286521576443544, 0.0, 586.63, 2452.60] };
+        assert_eq!(parse_tysh(&write_tysh(&t)).unwrap().transform, t.transform);
+    }
+}
+
+#[cfg(test)]
 mod nonfinite_tests {
     use super::*;
     use crate::engine_data::parse;
@@ -1670,17 +1853,17 @@ mod nonfinite_tests {
     #[test]
     fn non_finite_style_numbers_fall_back_to_defaults() {
         let d = parse(b"<< /FontSize 1e999 /Tracking nan /HorizontalScale inf /Kerning -inf /FillColor << /Values [1.0 nan 0.0 0.0] >> >>").unwrap();
-        let s = char_style(None, &d, &[], 1.0);
+        let s = char_style(&[], &d, &[], 1.0);
         let dflt = CharStyle::default();
         assert_eq!(s.size_pt, dflt.size_pt);
         assert_eq!((s.tracking, s.horizontal_scale, s.kern), (0.0, 1.0, 0.0));
         assert_eq!(s.color, Color::BLACK);
         // A finite f64 too big for f32 is dropped as well.
         let d = parse(b"<< /FontSize 1e300 /StartIndent inf >> ").unwrap();
-        assert_eq!(char_style(None, &d, &[], 1.0).size_pt, dflt.size_pt);
-        assert_eq!(para_style(None, &d, 1.0).start_indent_pt, 0.0);
+        assert_eq!(char_style(&[], &d, &[], 1.0).size_pt, dflt.size_pt);
+        assert_eq!(para_style(&[], &d, 1.0).start_indent_pt, 0.0);
         let d = parse(b"<< /FontSize 24.0 >>").unwrap();
-        assert_eq!(char_style(None, &d, &[], 1.0).size_pt, 24.0);
+        assert_eq!(char_style(&[], &d, &[], 1.0).size_pt, 24.0);
     }
 
     /// #5645: `FontBaseline` (1 superscript, 2 subscript) is read and written back.
@@ -1688,11 +1871,11 @@ mod nonfinite_tests {
     fn font_baseline_round_trips() {
         use photocraft_doc::text::FontBaseline;
         let d = parse(b"<< /FontBaseline 2 >>").unwrap();
-        assert_eq!(char_style(None, &d, &[], 1.0).baseline, FontBaseline::Subscript);
+        assert_eq!(char_style(&[], &d, &[], 1.0).baseline, FontBaseline::Subscript);
         let d = parse(b"<< /FontBaseline 1 >>").unwrap();
-        assert_eq!(char_style(None, &d, &[], 1.0).baseline, FontBaseline::Superscript);
+        assert_eq!(char_style(&[], &d, &[], 1.0).baseline, FontBaseline::Superscript);
         let s = CharStyle { baseline: FontBaseline::Subscript, ..Default::default() };
-        let back = char_style(None, &style_sheet_data(&s, 0, 1.0), &[], 1.0);
+        let back = char_style(&[], &style_sheet_data(&s, 0, 1.0), &[], 1.0);
         assert_eq!(back.baseline, FontBaseline::Subscript);
     }
 
