@@ -254,8 +254,7 @@ fn image_size(s: &mut Session, p: &Value) -> Result<Value> {
             Method::Automatic if nw > ow || nh > oh => Resample::PreserveDetails,
             Method::Automatic => Resample::BicubicSharper,
         };
-        resample_doc(doc, nw, nh, filter);
-        Ok(())
+        resample_doc(doc, "image.imageSize", nw, nh, filter)
     })?;
     // The size the document has now: without resampling `width`/`height` are ignored (#1815).
     let size = s.active().ok_or(EngineError::NoDocument)?.doc.size;
@@ -290,13 +289,15 @@ pub(crate) fn check_working_budget(cmd: &str, doc: &Document, nw: u32, nh: u32, 
 
 /// Resamples the whole document (pixels, masks, channels, selection, effects, vectors, guides) to
 /// `nw` x `nh` px with `filter`: the body of Image Size, shared by the Crop tool's W x H x Resolution
-/// mode. Callers check [`check_resample_budget`] first.
-pub(crate) fn resample_doc(doc: &mut Document, nw: u32, nh: u32, filter: Resample) {
+/// mode. Callers check [`check_resample_budget`] for the new canvas first; the pixels outside the
+/// canvas are scaled too, so a surface they would grow past the budget is refused here (#9212).
+pub(crate) fn resample_doc(doc: &mut Document, cmd: &str, nw: u32, nh: u32, filter: Resample) -> Result<()> {
     let (ow, oh) = (doc.size.width, doc.size.height);
     let (sx, sy) = (nw as f64 / ow.max(1) as f64, nh as f64 / oh.max(1) as f64);
     if (sx - 1.0).abs() < 1e-12 && (sy - 1.0).abs() < 1e-12 {
-        return;
+        return Ok(());
     }
+    check_hidden_resample_budget(cmd, doc, sx, sy)?;
     // Content that reaches the canvas edge keeps it: a Background stays opaque to the border.
     let canvas = Rect::from_xywh(0, 0, ow, oh);
     let taken = crate::smart_cmds::take_caches(&mut doc.layers);
@@ -325,6 +326,53 @@ pub(crate) fn resample_doc(doc: &mut Document, nw: u32, nh: u32, filter: Resampl
     doc.size = Size::new(nw, nh);
     crate::canvas_geom::refresh(doc, crate::canvas_geom::Refresh::All);
     let Ok(()) = crate::smart_cmds::restore_unrendered(doc, taken, |c| Ok::<_, Infallible>(resize_surface_in_canvas(c, sx, sy, filter, canvas)));
+    Ok(())
+}
+
+/// [`check_resample_budget`] for the largest surface [`resample_doc`] scales by `sx` x `sy`: each
+/// keeps its pixels outside the canvas (a crop that didn't delete them, a layer moved off the
+/// canvas), and those grow with the scale like the rest.
+fn check_hidden_resample_budget(cmd: &str, doc: &mut Document, sx: f64, sy: f64) -> Result<()> {
+    let canvas = doc.bounds();
+    // The largest surface by bytes: its scaled width, height and bytes per pixel (a mask has one
+    // channel, the layers the document's).
+    let mut largest = (0u32, 0u32, 1u64);
+    let mut visit = |surf: &Surface| {
+        let r = surf.content_bounds();
+        // What lies within the canvas scales to within the new canvas, already budgeted.
+        if r.is_empty() || canvas.union(&r) == canvas {
+            return;
+        }
+        // The output's extent, as `resize_surface_in_canvas` lays it out.
+        let side = |a: i32, b: i32, k: f64| ((f64::from(b) * k).ceil() - (f64::from(a) * k).floor()).clamp(0.0, f64::from(u32::MAX)) as u32;
+        let (w, h) = (side(r.x0, r.x1, sx), side(r.y0, r.y1, sy));
+        let bpp = surf.format().bytes_per_pixel().max(1) as u64;
+        let bytes = |(w, h, bpp): (u32, u32, u64)| u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bpp);
+        if bytes((w, h, bpp)) > bytes(largest) {
+            largest = (w, h, bpp);
+        }
+    };
+    // The surfaces `resample_doc` scales, smart object caches included.
+    for_each_surface(&mut doc.layers, true, &mut |surf, _| visit(surf));
+    for ch in doc.channels.iter().chain(doc.quick_mask.as_ref()) {
+        visit(&ch.surface);
+    }
+    if let Some(sel) = &doc.selection {
+        visit(sel);
+    }
+    let (w, h, bpp) = largest;
+    let px = u64::from(w).saturating_mul(u64::from(h));
+    if px.saturating_mul(bpp) <= MAX_RESAMPLE_BYTES {
+        return Ok(());
+    }
+    let max_mp = MAX_RESAMPLE_BYTES / bpp / 1_000_000;
+    Err(bad(
+        cmd,
+        format!(
+            "{w} x {h} px is {} megapixels; resampling at this bit depth is limited to {max_mp} megapixels. The pixels outside the canvas are resampled too: choose a smaller size, or delete them first (Crop with Delete Cropped Pixels)",
+            px / 1_000_000
+        ),
+    ))
 }
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
@@ -614,8 +662,7 @@ fn crop(s: &mut Session, p: &Value) -> Result<Value> {
             crate::crop_fill::fill_uncovered(doc, *active, &crate::crop_fill::Coverage::crop(r, original.width, original.height))?;
         }
         doc.selection = None;
-        target.apply(doc);
-        Ok(())
+        target.apply(doc)
     })?;
     Ok(crop_result(s, json!({ "x": r.x0, "y": r.y0, "width": r.width(), "height": r.height() })))
 }
@@ -630,15 +677,16 @@ struct CropTarget {
 
 impl CropTarget {
     /// Applies the target to a document that has just been cropped (inside the crop's history step).
-    fn apply(&self, doc: &mut Document) {
+    fn apply(&self, doc: &mut Document) -> Result<()> {
         if let Some((w, h)) = self.size {
             // As for Image Size: an Indexed Color document holds only its colour table's colours (#6019).
             let filter = if doc.mode == ColorMode::Indexed { Resample::Nearest } else { self.filter };
-            resample_doc(doc, w, h, filter);
+            resample_doc(doc, "image.crop", w, h, filter)?;
         }
         if let Some(r) = self.resolution {
             doc.resolution_dpi = r;
         }
+        Ok(())
     }
 
     /// Where Color Sampler points go: shifted by the crop's origin, then scaled with the pixels
@@ -803,8 +851,7 @@ fn rotated_crop(s: &mut Session, r: Rect, angle: f64, delete: bool, content_awar
                 crate::crop_fill::fill_uncovered(doc, *active, &coverage)?;
             }
             doc.selection = None;
-            crop_target.apply(doc);
-            Ok(())
+            crop_target.apply(doc)
         })
     })?;
     Ok(crop_result(s, json!({ "x": r.x0, "y": r.y0, "width": r.width(), "height": r.height(), "angle": angle })))
@@ -1848,6 +1895,53 @@ mod tests {
         let mut s = session();
         s.execute("image.crop", json!({"x": 0, "y": 0, "width": 20, "height": 10, "targetWidth": 40.0, "targetHeight": 20.0})).unwrap();
         assert_eq!(doc(&s).size, Size::new(40, 20));
+    }
+
+    /// #9212: a non-deleting crop keeps the pixels outside the frame, and W x H resamples them
+    /// too. A 20 px frame of a 2000 px Background resampled to 2000 px scales its hidden pixels
+    /// x100, to 200000 px a side (160 GB at 8 bits, past the 8 GiB budget): refused before
+    /// allocating, like a target size past the budget.
+    #[test]
+    fn crop_target_budgets_the_hidden_pixels_it_resamples() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 2000, "height": 2000})).unwrap();
+        s.execute("paint.setSymmetry", json!({"mode": "vertical", "center": [500, 700]})).unwrap();
+        let symmetry = s.active().unwrap().symmetry.clone();
+        let past = s.active().unwrap().history.past_len();
+        let mut p = json!({"x": 0, "y": 0, "width": 20, "height": 20, "deleteCroppedPixels": false, "targetWidth": 2000, "targetHeight": 2000});
+        for angle in [None, Some(90)] {
+            let mut p = p.clone();
+            if let Some(a) = angle {
+                p["angle"] = json!(a);
+            }
+            let err = s.execute("image.crop", p).unwrap_err().to_string();
+            assert!(err.contains("200000 x 200000 px is 40000 megapixels"), "{angle:?}: {err}");
+            assert_eq!(doc(&s).size, Size::new(2000, 2000), "{angle:?}: the document is unchanged");
+            assert_eq!(s.active().unwrap().history.past_len(), past, "{angle:?}: no history step");
+            // The turned crop rotates first: the painting symmetry turns back with the document.
+            assert_eq!(s.active().unwrap().symmetry, symmetry, "{angle:?}: the painting symmetry stays");
+        }
+        // Deleting the cropped pixels leaves only the frame to resample.
+        p["deleteCroppedPixels"] = json!(true);
+        s.execute("image.crop", p).unwrap();
+        assert_eq!(doc(&s).size, Size::new(2000, 2000));
+        assert_eq!(s.active().unwrap().history.past_len(), past + 1);
+    }
+
+    /// #9212: Image Size resamples the pixels outside the canvas as well. After a non-deleting
+    /// crop to 10 px, 20000 px (400 MP, within the budget) scales the hidden 100 px Background x2000.
+    #[test]
+    fn image_size_budgets_the_hidden_pixels_it_resamples() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 100, "height": 100})).unwrap();
+        s.execute("image.crop", json!({"x": 0, "y": 0, "width": 10, "height": 10, "deleteCroppedPixels": false})).unwrap();
+        let past = s.active().unwrap().history.past_len();
+        let err = s.execute("image.imageSize", json!({"width": 20000, "height": 20000})).unwrap_err().to_string();
+        assert!(err.contains("200000 x 200000 px is 40000 megapixels"), "{err}");
+        assert_eq!((doc(&s).size, s.active().unwrap().history.past_len()), (Size::new(10, 10), past));
+        // Without resampling only the resolution changes.
+        s.execute("image.imageSize", json!({"resolution": 300, "resample": "none"})).unwrap();
+        assert_eq!((doc(&s).size, doc(&s).resolution_dpi), (Size::new(10, 10), 300.0));
     }
 
     #[test]
