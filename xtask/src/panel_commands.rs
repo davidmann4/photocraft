@@ -46,23 +46,9 @@ pub struct Allowed {
 /// Existing click handlers that change the document directly. Shrink only: each entry is a
 /// follow-up (route it through an engine command), never a place to park new code.
 pub const ALLOWLIST: &[Allowed] = &[
-    // Window › Color: the HSB sliders set the foreground colour by assignment, so the change
-    // never reaches the journal, action recording or the control channel's event log.
-    // Fix: dispatch `tools.setColors` (it already exists).
-    Allowed {
-        file: "crates/ui-egui/src/panels.rs",
-        func: "hsb_sliders",
-        reason: "Color panel HSB sliders assign session.tools.foreground; dispatch tools.setColors",
-    },
-    // The Color panel's RGB sliders assign the foreground or background colour the same way.
-    // Fix: dispatch `tools.setColors`.
-    Allowed {
-        file: "crates/ui-egui/src/panels.rs",
-        func: "rgb_sliders",
-        reason: "Color panel RGB sliders assign session.tools.foreground/background; dispatch tools.setColors",
-    },
-    // The Color panel's colour field and hue strip (and their readout) assign the foreground or
-    // background colour on every drag frame. Fix: dispatch `tools.setColors`.
+    // Window › Color: the colour field and hue strip (and their readout) assign the foreground or
+    // background colour on every drag frame, so the change never reaches the journal, action
+    // recording or the control channel's event log. Fix: dispatch `tools.setColors` (it already exists).
     Allowed {
         file: "crates/ui-egui/src/panels.rs",
         func: "color_field",
