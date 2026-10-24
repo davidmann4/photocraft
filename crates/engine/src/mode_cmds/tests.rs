@@ -180,6 +180,19 @@ fn rotate_arbitrary_turns_unlinked_layer_masks() {
                     }
                 }
             }
+            // 90° pins the direction too (180° is its own inverse).
+            s.active_mut().unwrap().doc = base.clone();
+            s.execute("image.rotation.arbitrary", json!({"angle": 90, "interpolation": "nearest"})).unwrap();
+            let arbitrary = mask(&s);
+            s.active_mut().unwrap().doc = base.clone();
+            s.execute("image.imageRotation.90cw", json!({})).unwrap();
+            let turned = mask(&s);
+            for y in 0..40 {
+                for x in 0..30 {
+                    let (a, b) = (arbitrary.surface.sample_channel(x, y, 0), turned.surface.sample_channel(x, y, 0));
+                    assert!((a - b).abs() < 1e-3, "90cw, {depth}-bit, grouped {grouped}: ({x},{y}) {a} vs {b}");
+                }
+            }
         }
     }
 }
