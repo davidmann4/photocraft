@@ -260,12 +260,12 @@ pub fn chosen(app: &mut PhotocraftApp) {
 }
 
 /// I with the Crop tool (no text field focused, which the caller checks): Front Image. Returns
-/// true when the key was used; otherwise I stays the Eyedropper tool key.
+/// true when the key was used; otherwise I (and always ⇧I) stays the Eyedropper tool key.
 pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     if app.ui.tool != Tool::Crop || app.crop.drag.is_some() || app.session.active().is_none() {
         return false;
     }
-    if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, egui::Key::I)) {
+    if ctx.input_mut(|i| !i.modifiers.shift && i.consume_key(Modifiers::NONE, egui::Key::I)) {
         front_image(app);
         crate::crop_ui::apply_ratio(app);
         return true;
@@ -495,6 +495,21 @@ mod tests {
         app2.ui.tool = Tool::Brush;
         ctx.input_mut(|i| i.events.push(egui::Event::Key { key: egui::Key::I, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }));
         assert!(!keys(&mut app2, &ctx));
+    }
+
+    /// ⇧I is the Eyedropper group's key even with the Crop tool, not Front Image.
+    #[test]
+    fn shift_i_with_the_crop_tool_switches_to_the_eyedropper() {
+        let mut app = app(SampleType::U8);
+        let ratio = app.ui.tool_options.crop_ratio.clone();
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| {
+            i.modifiers = Modifiers::SHIFT;
+            i.events.push(egui::Event::Key { key: egui::Key::I, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::SHIFT });
+        });
+        crate::shortcuts::handle(&mut app, &ctx);
+        assert_eq!(app.ui.tool, Tool::Eyedropper);
+        assert_eq!(app.ui.tool_options.crop_ratio, ratio);
     }
 
     /// Committing a W x H x Resolution crop resamples the frame's area to exactly W x H px and sets
