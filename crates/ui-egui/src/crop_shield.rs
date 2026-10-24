@@ -122,19 +122,19 @@ pub fn hides_outside(app: &PhotocraftApp) -> bool {
 /// H with the Crop tool showing a box and no drag in progress toggles Show Cropped Area (in
 /// Classic Mode, where the option is greyed out, H is taken and does nothing), and P Use Classic
 /// Mode. Returns true when a key was used; otherwise H stays the Hand tool key and P the Pen's.
-/// ⇧H and ⇧P are always the tool keys (`consume_key` would also take them: it ignores ⇧).
+/// ⇧H and ⇧P are always the tool keys.
 pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     if app.ui.tool != Tool::Crop || app.ui.crop_rect.is_none() || app.crop.drag.is_some() {
         return false;
     }
-    if ctx.input_mut(|i| !i.modifiers.shift && i.consume_key(Modifiers::NONE, Key::H)) {
+    if ctx.input_mut(|i| consume_unshifted(i, Key::H)) {
         let s = &mut app.ui.tool_options.crop_shield;
         if !s.classic_mode {
             s.show_cropped_area = !s.show_cropped_area;
         }
         return true;
     }
-    if ctx.input_mut(|i| !i.modifiers.shift && i.consume_key(Modifiers::NONE, Key::P)) {
+    if ctx.input_mut(|i| consume_unshifted(i, Key::P)) {
         let s = &mut app.ui.tool_options.crop_shield;
         s.classic_mode = !s.classic_mode;
         // The view follows at once, about its own centre: default mode turns it with the frame,
@@ -143,6 +143,15 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
         return true;
     }
     false
+}
+
+/// `consume_key(Modifiers::NONE, key)` without the presses that hold ⇧: egui ignores an extra ⇧
+/// there, but ⇧+letter is the tool key. Reads each event's own modifiers, which synthetic
+/// (control channel) keys carry without changing the frame's.
+pub(crate) fn consume_unshifted(i: &mut egui::InputState, key: Key) -> bool {
+    let before = i.events.len();
+    i.events.retain(|e| !matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && !modifiers.shift && modifiers.matches_logically(Modifiers::NONE)));
+    i.events.len() != before
 }
 
 /// The options bar's gear button and its menu. Returns true when Custom… asks for the Color
@@ -353,7 +362,7 @@ mod tests {
             let before = app.ui.tool_options.crop_shield.clone();
             let ctx = egui::Context::default();
             ctx.input_mut(|i| {
-                i.modifiers = Modifiers::SHIFT;
+                // Only the event holds ⇧, as with a control-channel `ui.key` (the frame's state lags).
                 i.events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::SHIFT });
             });
             crate::shortcuts::handle(&mut app, &ctx);

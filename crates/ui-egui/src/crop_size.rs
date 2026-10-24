@@ -15,7 +15,7 @@
 //!   with the Crop tool, [`keys`]) fills them with the active document's size in px and its
 //!   resolution; Clear empties them; ⇄ and X swap W and H.
 
-use egui::{Modifiers, Stroke, StrokeKind, vec2};
+use egui::{Stroke, StrokeKind, vec2};
 use photocraft_engine::prefs::Unit;
 use serde_json::{Value, json};
 
@@ -265,7 +265,7 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     if app.ui.tool != Tool::Crop || app.crop.drag.is_some() || app.session.active().is_none() {
         return false;
     }
-    if ctx.input_mut(|i| !i.modifiers.shift && i.consume_key(Modifiers::NONE, egui::Key::I)) {
+    if ctx.input_mut(|i| crate::crop_shield::consume_unshifted(i, egui::Key::I)) {
         front_image(app);
         crate::crop_ui::apply_ratio(app);
         return true;
@@ -322,6 +322,7 @@ pub fn fields(o: &mut ToolOptions, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::Modifiers;
     use photocraft_doc::{Color, ColorMode, Document, SampleType, Size};
 
     #[test]
@@ -504,7 +505,7 @@ mod tests {
         let ratio = app.ui.tool_options.crop_ratio.clone();
         let ctx = egui::Context::default();
         ctx.input_mut(|i| {
-            i.modifiers = Modifiers::SHIFT;
+            // Only the event holds ⇧, as with a control-channel `ui.key` (the frame's state lags).
             i.events.push(egui::Event::Key { key: egui::Key::I, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::SHIFT });
         });
         crate::shortcuts::handle(&mut app, &ctx);
