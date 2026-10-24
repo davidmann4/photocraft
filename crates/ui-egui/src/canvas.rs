@@ -5906,6 +5906,11 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
     {
         crate::guide_select::clear(app);
     }
+    // A tool key pressed mid-drag ends the crop gesture here: a later handler can take every event
+    // of the new tool, and a drag left set keeps the frame from committing on leave (#9223).
+    if app.ui.tool != Tool::Crop {
+        app.crop.drag = None;
+    }
     if crate::symmetry_ui::pointer(app, ev, crate::workspace_ui::sticky_mods(app, mods)) {
         return;
     }

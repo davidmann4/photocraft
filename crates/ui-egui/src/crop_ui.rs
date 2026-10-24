@@ -1855,6 +1855,27 @@ mod tests {
         assert_eq!(app.session.active().unwrap().doc.size, Size::new(200, 100));
     }
 
+    /// A tool key pressed while a drag on the frame is held (⇧C to Perspective Crop): the next
+    /// tool's events end the gesture, even a tool that takes every event before the Crop tool's
+    /// handler, and leaving then commits the frame as it does for any other tool (#3368).
+    #[test]
+    fn a_tool_switch_during_a_drag_ends_it_and_commits_the_frame() {
+        for tool in [Tool::PerspectiveCrop, Tool::Ruler, Tool::Slice, Tool::Frame, Tool::Artboard, Tool::Brush] {
+            let mut app = app(SampleType::U8);
+            ensure_frame(&mut app);
+            drag(&mut app, &[[20.0, 20.0], [120.0, 80.0]], NONE);
+            tool_event(&mut app, ToolEvent::Down { x: 60.0, y: 50.0, pressure: 1.0 }, NONE);
+            assert!(app.crop.drag.is_some());
+            app.ui.tool = tool;
+            tool_event(&mut app, ToolEvent::Move { x: 70.0, y: 50.0, pressure: 1.0 }, NONE);
+            tool_event(&mut app, ToolEvent::Up { x: 70.0, y: 50.0 }, NONE);
+            assert!(app.crop.drag.is_none(), "{tool:?}");
+            ensure_frame(&mut app);
+            assert_eq!(app.ui.crop_rect, None, "{tool:?}");
+            assert_eq!(app.session.active().unwrap().doc.size, Size::new(100, 60), "{tool:?}");
+        }
+    }
+
     /// Image › Crop with a pending crop commits the frame (the one Image item Photoshop keeps).
     #[test]
     fn image_crop_menu_commits_a_pending_crop() {
