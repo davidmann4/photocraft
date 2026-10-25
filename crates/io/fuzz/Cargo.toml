@@ -12,6 +12,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+photocraft-codecs = { path = "../../codecs" }
 photocraft-io = { path = ".." }
 
 [[bin]]
