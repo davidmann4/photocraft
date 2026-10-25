@@ -221,20 +221,35 @@ fn in_memory(id: usvg::fontdb::ID, db: &mut Arc<usvg::fontdb::Database>) -> usvg
     type Files = (HashMap<PathBuf, Arc<Vec<u8>>>, usize);
     static FILES: OnceLock<Mutex<Files>> = OnceLock::new();
     let Some((Source::File(path), index)) = db.face_source(id) else { return id };
-    let bytes = {
-        let mut files = FILES.get_or_init(Mutex::default).lock().unwrap_or_else(PoisonError::into_inner);
-        match files.0.get(&path) {
-            Some(b) => b.clone(),
-            None => {
-                let Ok(b) = std::fs::read(&path) else { return id };
-                if files.1.saturating_add(b.len()) > MAX_CACHED_FONT_BYTES {
+    let files = || FILES.get_or_init(Mutex::default).lock().unwrap_or_else(PoisonError::into_inner);
+    let fits = |files: &Files, len: usize| files.1.saturating_add(len) <= MAX_CACHED_FONT_BYTES;
+    let cached = files().0.get(&path).cloned();
+    let bytes = match cached {
+        Some(b) => b,
+        None => {
+            // The size first: a file past the budget isn't read at all, on this lookup or the next.
+            let Ok(len) = std::fs::metadata(&path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)) else { return id };
+            if !fits(&files(), len) {
+                return id;
+            }
+            let Ok(b) = std::fs::read(&path) else { return id };
+            let b = Arc::new(b);
+            // The face has to load from the bytes before they're kept or the file's faces leave
+            // the database: a file replaced or cut short since fontdb indexed it stays on disk.
+            let mut probe = usvg::fontdb::Database::new();
+            let ids = probe.load_font_source(Source::Binary(b.clone()));
+            if !ids.iter().any(|&n| probe.face_source(n).is_some_and(|(_, i)| i == index)) {
+                return id;
+            }
+            let mut files = files();
+            if !files.0.contains_key(&path) {
+                if !fits(&files, b.len()) {
                     return id;
                 }
                 files.1 = files.1.saturating_add(b.len());
-                let b = Arc::new(b);
                 files.0.insert(path.clone(), b.clone());
-                b
             }
+            b
         }
     };
     let db = Arc::make_mut(db);
@@ -1183,6 +1198,40 @@ mod tests {
         };
         assert!(outlines(&on_disk).iter().any(|p| !p.subpaths.is_empty()), "the text has outlines");
         assert_eq!(outlines(&on_disk), outlines(&in_memory));
+    }
+
+    /// A font file that no longer loads (replaced or cut short since fontdb indexed it) keeps its
+    /// faces in the database and isn't remembered: once the file is whole again, text is set
+    /// from it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_font_file_gone_bad_since_indexing_is_not_cached() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static BAD: AtomicBool = AtomicBool::new(true);
+        fn indexed_then_overwritten() -> Arc<usvg::fontdb::Database> {
+            let path = std::env::temp_dir().join(format!("photocraft-svg-test-bad-{}.ttf", std::process::id()));
+            std::fs::write(&path, include_bytes!("../../../assets/fonts/Inter-Regular.ttf")).unwrap();
+            let mut db = usvg::fontdb::Database::new();
+            db.load_font_file(&path).unwrap();
+            if BAD.load(Ordering::SeqCst) {
+                std::fs::write(&path, b"not a font any more").unwrap();
+            }
+            Arc::new(db)
+        }
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"60\"><text x=\"5\" y=\"45\" font-family=\"Inter\">IHI</text></svg>";
+        let parsed = parse_with(svg, indexed_then_overwritten).unwrap();
+        let sources: Vec<_> = parsed.tree.fontdb().faces().map(|f| matches!(f.source, usvg::fontdb::Source::File(_))).collect();
+        assert_eq!(sources, [true], "the face stays in the database, on disk");
+        BAD.store(false, Ordering::SeqCst);
+        let parsed = parse_with(svg, indexed_then_overwritten).unwrap();
+        let sources: Vec<_> = parsed.tree.fontdb().faces().map(|f| matches!(f.source, usvg::fontdb::Source::Binary(_))).collect();
+        assert_eq!(sources, [true], "the whole file is read into memory now");
+        let layers = import_parsed("t", parsed, MAX_GROUP_DEPTH).unwrap().document.layers;
+        assert_eq!(layers.first().map(|l| l.name.as_str()), Some("IHI"));
+        assert!(
+            layers.iter().any(|l| matches!(&l.content, LayerContent::Group(g) if g.children.iter().any(|c| matches!(&c.content, LayerContent::Shape(s) if !s.path.subpaths.is_empty())))),
+            "the text has outlines"
+        );
     }
 
     /// #9406: moving a font collection into memory keeps its faces in their order, so the
