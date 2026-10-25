@@ -239,7 +239,10 @@ fn in_memory(id: usvg::fontdb::ID, db: &mut Arc<usvg::fontdb::Database>) -> usvg
     };
     let db = Arc::make_mut(db);
     let same_file: Vec<_> = db.faces().filter(|f| matches!(&f.source, Source::File(p) if *p == path)).map(|f| f.id).collect();
-    for f in same_file {
+    // Last first: fontdb's slots are reused last-freed-first, so the file's faces come back in
+    // their old places and order, and the fallback search (first face with the character)
+    // still finds the face it finds on disk.
+    for f in same_file.into_iter().rev() {
         db.remove_face(f);
     }
     let loaded = db.load_font_source(Source::Binary(bytes));
@@ -1180,6 +1183,46 @@ mod tests {
         };
         assert!(outlines(&on_disk).iter().any(|p| !p.subpaths.is_empty()), "the text has outlines");
         assert_eq!(outlines(&on_disk), outlines(&in_memory));
+    }
+
+    /// #9406: moving a font collection into memory keeps its faces in their order, so the
+    /// fallback search for a later text still finds the face it found on disk first.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_collection_in_memory_keeps_its_face_order() {
+        fn collection_on_disk() -> Arc<usvg::fontdb::Database> {
+            // A two-face .ttc of the bundled Inter Regular and SemiBold: the `ttcf` header, then
+            // each font with its table offsets moved by where it starts.
+            let fonts: [&[u8]; 2] = [include_bytes!("../../../assets/fonts/Inter-Regular.ttf"), include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf")];
+            let mut ttc = b"ttcf      ".to_vec();
+            let mut start = 20;
+            let mut body = Vec::new();
+            for f in fonts {
+                ttc.extend_from_slice(&u32::try_from(start).unwrap().to_be_bytes());
+                let mut font = f.to_vec();
+                for t in 0..usize::from(u16::from_be_bytes([font[4], font[5]])) {
+                    let at = 12 + t * 16 + 8;
+                    let off = u32::from_be_bytes(font[at..at + 4].try_into().unwrap()) + u32::try_from(start).unwrap();
+                    font[at..at + 4].copy_from_slice(&off.to_be_bytes());
+                }
+                font.resize(font.len().next_multiple_of(4), 0);
+                start += font.len();
+                body.extend(font);
+            }
+            ttc.extend(body);
+            let path = std::env::temp_dir().join(format!("photocraft-svg-test-{}.ttc", std::process::id()));
+            std::fs::write(&path, ttc).unwrap();
+            let mut db = usvg::fontdb::Database::new();
+            db.load_font_file(&path).unwrap();
+            Arc::new(db)
+        }
+        let order = |db: &usvg::fontdb::Database| db.faces().map(|f| (f.index, f.weight.0)).collect::<Vec<_>>();
+        assert_eq!(order(&collection_on_disk()), [(0, 400), (1, 600)]);
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"60\"><text x=\"5\" y=\"45\" font-family=\"Inter\">IHI</text></svg>";
+        let parsed = parse_with(svg, collection_on_disk).unwrap();
+        let db = parsed.tree.fontdb();
+        assert!(db.faces().all(|f| matches!(f.source, usvg::fontdb::Source::Binary(_))), "both faces of the file are in memory");
+        assert_eq!(order(db), [(0, 400), (1, 600)]);
     }
 
     #[test]
