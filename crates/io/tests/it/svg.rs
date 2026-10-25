@@ -352,7 +352,7 @@ fn deeply_nested_markup_is_an_error_not_a_stack_overflow() {
 }
 
 /// The parser expands a DTD's internal entities after the depth check: an entity holding
-/// markup, or a quote in a DTD comment that made the check skip ahead, hid 20 000 nested groups
+/// markup, or a quote in a DTD comment or declaration that made the check skip ahead, hid 20 000 nested groups
 /// from it and overflowed the stack again. Both are errors now; same small stack as above.
 #[test]
 fn a_dtd_cannot_hide_nesting_from_the_depth_check() {
@@ -362,6 +362,12 @@ fn a_dtd_cannot_hide_nesting_from_the_depth_check() {
         ("entity", with_dtd(&format!("<!ENTITY a \"{}\">", deep("<g>", "</g>")), "&a;")),
         ("single-quoted entity", with_dtd(&format!("<!ENTITY a '{}'>", deep("<g>", "</g>")), "&a;")),
         ("quote in a comment", with_dtd("<!-- ' -->", &format!("{}<desc>'</desc>", deep("<g>", "</g>")))),
+        ("quote in an element declaration", with_dtd("<!ELEMENT x '>", &format!("{}<desc>'</desc>", deep("<g>", "</g>")))),
+        (
+            "entity between quoted attribute lists",
+            with_dtd(&format!("<!ATTLIST svg x CDATA '><!ENTITY a \"{}\"><!ATTLIST svg y CDATA '>", deep("<g>", "</g>")), "&a;"),
+        ),
+        ("entity between quoted notations", with_dtd(&format!("<!NOTATION n SYSTEM '><!ENTITY a \"{}\"><!NOTATION m SYSTEM '>", deep("<g>", "</g>")), "&a;")),
     ];
     std::thread::Builder::new()
         .stack_size(512 * 1024)
@@ -385,7 +391,7 @@ fn a_dtd_cannot_hide_nesting_from_the_depth_check() {
 fn text_entities_in_a_dtd_still_open() {
     let r = open(
         "<?xml version=\"1.0\"?><!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\" [\
-           <!ENTITY ns_svg \"http://www.w3.org/2000/svg\"> <!-- a ' and a <g> --> <?pi > ?> <!ENTITY red '#ff0000'> <!ENTITY c \"&#169; &#60;g&#62;\"> ]>\
+           <!ENTITY ns_svg \"http://www.w3.org/2000/svg\"> <!-- a ' and a <g> --> <?pi > ?> <!ATTLIST svg data-x CDATA '<'> <!ENTITY red '#ff0000'> <!ENTITY c \"&#169; &#60;g&#62;\"> ]>\
          <svg xmlns=\"&ns_svg;\" width=\"8\" height=\"8\"><title>&c;</title><rect width=\"8\" height=\"8\" fill=\"&red;\"/></svg>",
     );
     assert_eq!(r.document.layers.len(), 1);

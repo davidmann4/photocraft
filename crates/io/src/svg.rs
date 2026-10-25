@@ -343,12 +343,15 @@ fn nesting_depth(xml: &[u8], limit: usize) -> Result<usize, IoError> {
                 after(j.saturating_add(4), b"-->")
             } else if rest.starts_with(b"<?") {
                 after(j.saturating_add(2), b"?>")
-            } else if rest.starts_with(b"<!") {
+            } else if rest.starts_with(b"<!ENTITY") {
                 let end = tag_end(j.saturating_add(2)).0;
-                if rest.starts_with(b"<!ENTITY") && xml.get(j.saturating_add(2)..end).is_some_and(|decl| decl.contains(&b'<')) {
+                if xml.get(j.saturating_add(2)..end).is_some_and(|decl| decl.contains(&b'<')) {
                     return Err(IoError::Svg("the SVG's DTD declares an entity holding markup, which isn't supported".into()));
                 }
                 end
+            } else if rest.starts_with(b"<!") {
+                // The parser ends ELEMENT, ATTLIST and NOTATION at the first `>`, quotes or not.
+                after(j.saturating_add(2), b">")
             } else if rest.starts_with(b"]") {
                 return Ok(tag_end(j.saturating_add(1)).0);
             } else {
