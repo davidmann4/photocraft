@@ -240,8 +240,10 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
     {
         // Inside the untouched default frame draws a new crop (in both modes): snap its corner, not
         // the old canvas-sized frame's bounds. An edited Classic Mode frame still moves and snaps
-        // its edges.
-        let gesture = if app.crop.default_frame { Gesture::Point } else { Gesture::Move { rect } };
+        // its edges. A straighten line (`crop_straighten::pointer` takes the press first) snaps its
+        // ends as points, as outside the frame, never by the offset of a frame it doesn't move.
+        let straightens = app.crop.drag.is_none() && (app.crop.straighten.armed || mods.command);
+        let gesture = if app.crop.default_frame || straightens { Gesture::Point } else { Gesture::Move { rect } };
         Some((gesture, Vec::new()))
     } else if tool == Tool::Crop
         && crate::crop_mode::moves_image(app)
@@ -696,6 +698,43 @@ mod tests {
                 assert_eq!(app.ui.views[0], view);
             }
             assert_eq!(app.session.active().unwrap().history.past_len(), history);
+        }
+    }
+
+    /// A straighten line drawn inside an upright, edited frame levels the frame on the line as
+    /// drawn: it isn't shifted by the offset that would snap the frame if the press moved it. The
+    /// default mode moves the image there, which never shifted the line; it stays as it was.
+    #[test]
+    fn a_straighten_line_inside_the_frame_is_not_snapped_as_a_frame_move() {
+        let mac_cmd = egui::Modifiers { mac_cmd: true, command: true, ..Default::default() };
+        for (classic, armed, m) in [(true, true, egui::Modifiers::NONE), (true, false, mac_cmd), (false, true, egui::Modifiers::NONE)] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"width": 200, "height": 100})).unwrap();
+            app.sync_views();
+            app.ui.views[0].zoom = 1.0;
+            app.ui.views[0].fit_pending = false;
+            app.ui.tool = Tool::Crop;
+            app.ui.tool_options.crop_shield.classic_mode = classic;
+            app.ui.extras.snap = true;
+            app.ui.view.show.smart_guides = true;
+            crate::crop_ui::ensure_frame(&mut app);
+            app.ui.crop_rect = Some([20.0, 20.0, 120.0, 70.0]);
+            app.crop.default_frame = false;
+            if classic {
+                // Without Straighten the press moves the frame and snaps its edges, as on main.
+                crate::snap_ui::begin(&mut app, [30.0, 30.0], egui::Modifiers::NONE);
+                let gesture = app.prefs_rt.snap.take().map(|s| s.gesture);
+                assert_eq!(gesture, Some(Gesture::Move { rect: [20.0, 20.0, 120.0, 70.0] }));
+            }
+            app.crop.straighten.armed = armed;
+            // Moving the frame by the line's (100, 8) would bring its centre 3 px from the
+            // document's: that offset must not reach the line. Both ends are clear of every target.
+            crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 30.0, y: 30.0, pressure: 1.0 }, m);
+            crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 130.0, y: 38.0, pressure: 1.0 }, m);
+            crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 130.0, y: 38.0 }, m);
+            let want = crate::crop_straighten::frame_angle([30.0, 30.0], [130.0, 38.0], 0.0).unwrap();
+            let got = crate::crop_ui::angle(&app);
+            assert!((got - want).abs() < 1e-9, "Classic Mode {classic}, armed {armed}: {got} vs {want}");
         }
     }
 
