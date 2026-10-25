@@ -421,7 +421,14 @@ pub fn export_data_sets_with(s: &Session, p: &Value, mut write: impl FnMut(&str,
     }
     // Filename template: `{name}` (sanitised data-set name), `{index}` (1-based). Default `{name}`.
     let template = p.get("naming").and_then(Value::as_str).unwrap_or("{name}");
-    let doc_stem = original.name.rsplit_once('.').map_or(original.name.as_str(), |(a, _)| a).to_string();
+    // A document name is not a path: a separator in it must not leave `dir`.
+    let doc_stem: String = original
+        .name
+        .rsplit_once('.')
+        .map_or(original.name.as_str(), |(a, _)| a)
+        .chars()
+        .map(|c| if c.is_control() || "/\\<>:\"|?*".contains(c) { '_' } else { c })
+        .collect();
     // Plan the whole batch before writing: sanitised names or a constant template may collide.
     // Match the case-insensitive comparison used by the other batch exporters.
     let mut claimed = std::collections::HashMap::new();
@@ -429,7 +436,7 @@ pub fn export_data_sets_with(s: &Session, p: &Value, mut write: impl FnMut(&str,
     for (n, set) in sets.iter().enumerate() {
         let safe: String = set.name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
         let stem = template.replace("{name}", &safe).replace("{index}", &format!("{:03}", n + 1)).replace("{document}", &doc_stem);
-        let name = format!("{stem}.{format}");
+        let name = crate::file_cmds::portable_device_name(format!("{stem}.{format}"));
         if let Some(first) = claimed.insert(name.to_lowercase(), &set.name) {
             return Err(bad(
                 "file.export.dataSetsAsFiles",
