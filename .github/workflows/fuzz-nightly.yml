@@ -99,7 +99,11 @@ jobs:
         working-directory: crates/${{ matrix.target.crate }}
         env:
           FUZZ_SECONDS: ${{ inputs.fuzz_seconds || (github.event.schedule == '11 1 * * 0' && '1800') || '300' }}
-        run: cargo fuzz run ${{ matrix.target.name }} ${{ matrix.target.args }} -- -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=4096 -timeout=30
+        # The decoders may ask for one buffer of up to 8 GiB (`photocraft_codecs::Limits::default`
+        # `max_alloc`), and a few header bytes are enough to declare that, so libFuzzer's malloc
+        # limit sits just above it: only an allocation past the budget counts as a crash. The
+        # runner has 16 GB.
+        run: cargo fuzz run ${{ matrix.target.name }} ${{ matrix.target.args }} -- -max_total_time="$FUZZ_SECONDS" -malloc_limit_mb=9216 -rss_limit_mb=12288 -timeout=30
       - name: Minimise corpus
         if: success()
         working-directory: crates/${{ matrix.target.crate }}
