@@ -831,14 +831,22 @@ fn merge_to_hdr(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Paints the pixels outside the selection (holes, gaps between regions) in
 /// the median colour of the selection's edge, so detection sees them as
-/// background and finds no photo there.
-fn mask_unselected(sel: &Surface, area: Rect, w: usize, h: usize, rgba: &mut [[f32; 4]]) {
+/// background and finds no photo there. Returns false when no pixel is at
+/// least half selected (a faint feathered selection), so the caller refuses
+/// instead of searching the unmasked area.
+fn mask_unselected(sel: &Surface, area: Rect, w: usize, h: usize, rgba: &mut [[f32; 4]]) -> bool {
     let mut cov = Vec::new();
     sel.read_region_into(area, &mut cov);
     let ch = sel.channels().max(1);
     let inside: Vec<bool> = cov.chunks_exact(ch).map(|p| p[0] >= 0.5).collect();
-    if inside.len() != w * h || rgba.len() != w * h || inside.iter().all(|&b| b) {
-        return;
+    if inside.len() != w * h || rgba.len() != w * h {
+        return true;
+    }
+    if !inside.iter().any(|&b| b) {
+        return false;
+    }
+    if inside.iter().all(|&b| b) {
+        return true;
     }
     let is_in = |x: usize, y: usize| inside.get(y * w + x).copied().unwrap_or(false);
     let mut edge = Vec::new();
@@ -853,9 +861,6 @@ fn mask_unselected(sel: &Surface, area: Rect, w: usize, h: usize, rgba: &mut [[f
             }
         }
     }
-    if edge.is_empty() {
-        return;
-    }
     let bg: [f32; 4] = std::array::from_fn(|c| {
         let mut v: Vec<f32> = edge.iter().map(|p| p[c]).collect();
         v.sort_by(f32::total_cmp);
@@ -866,6 +871,7 @@ fn mask_unselected(sel: &Surface, area: Rect, w: usize, h: usize, rgba: &mut [[f
             *q = bg;
         }
     }
+    true
 }
 
 fn crop_and_straighten(s: &mut Session, _p: &Value) -> Result<Value> {
@@ -891,8 +897,10 @@ fn crop_and_straighten(s: &mut Session, _p: &Value) -> Result<Value> {
             }
         }
     }
-    if let Some(sel) = &doc.selection {
-        mask_unselected(sel, area, w, h, &mut rgba);
+    if let Some(sel) = &doc.selection
+        && !mask_unselected(sel, area, w, h, &mut rgba)
+    {
+        return Err(EngineError::Other("no pixels are more than 50% selected".into()));
     }
     let mut found = scancrop::find_photos(w, h, &rgba);
     for f in &mut found {
@@ -1282,6 +1290,26 @@ mod tests {
             let near = |x: f64, y: f64| (cx - x).abs() < 3.0 && (cy - y).abs() < 3.0;
             assert!(near(120.0, 115.0) || near(365.0, 240.0), "{c}");
         }
+    }
+
+    #[test]
+    fn crop_and_straighten_refuses_a_selection_under_half_coverage() {
+        // A faint (strongly feathered) selection has no pixel at or above 50%:
+        // like Photoshop, nothing counts as selected, so no photo is split off
+        // from the unmasked bounding box.
+        let (w, h) = (480usize, 340usize);
+        let mut px = vec![[0.98f32, 0.98, 0.98, 1.0]; w * h];
+        for y in 180..300 {
+            px[y * w + 290..y * w + 440].fill([0.1, 0.2, 0.6, 1.0]);
+        }
+        let mut s = Session::new();
+        s.add_document(doc_from("scan", &px, w, h, SampleType::U8), None);
+        let mut m = Surface::new(photocraft_color::PixelFormat::GRAY8);
+        m.fill_rect(Rect::new(270, 160, 460, 320), &[0.3]);
+        std::sync::Arc::make_mut(&mut s.active_mut().unwrap().doc).selection = Some(m);
+        let e = s.execute("file.automate.cropAndStraightenPhotos", json!({})).unwrap_err();
+        assert!(e.to_string().contains("50%"), "{e}");
+        assert_eq!(s.documents().len(), 1);
     }
 
     #[test]
