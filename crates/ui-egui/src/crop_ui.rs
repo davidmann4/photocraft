@@ -495,6 +495,9 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> Option<bool> {
 /// Intercept Undo/Redo/Toggle Last State while the Crop tool owns box history, for every caller
 /// (menus, shortcuts, the control channel, MCP) — as `transform_tool::intercept` does.
 pub fn intercept(app: &mut PhotocraftApp, id: &str) -> Option<Result<serde_json::Value, String>> {
+    if holds_history(app, id) {
+        return Some(Err("Commit or cancel the crop first".into()));
+    }
     if app.ui.tool != Tool::Crop || (app.crop.undo.is_empty() && app.crop.redo.is_empty()) {
         return None;
     }
@@ -504,6 +507,13 @@ pub fn intercept(app: &mut PhotocraftApp, id: &str) -> Option<Result<serde_json:
         "edit.toggleLastState" => Some(Err("Commit or cancel the crop first".into())),
         _ => None,
     }
+}
+
+/// A History jump waits for a drawn frame (#9285): it would resize the document under the frame,
+/// which keeps its coordinates. The Edit menu greys Step Forward/Backward ([`blocks`]); the History
+/// panel and the control channel come through `app.run`.
+pub fn holds_history(app: &PhotocraftApp, id: &str) -> bool {
+    pending(app) && matches!(id, "history.selectState" | "history.selectSnapshot" | "history.stepBackward" | "history.stepForward" | "history.deleteState")
 }
 
 /// Undo (or redo) one box step.
@@ -1422,6 +1432,36 @@ mod tests {
         app.run("edit.undo", json!({})).unwrap();
         assert!(!crate::menus::is_enabled(&app, "edit.undo"), "no box step left to undo");
         assert!(crate::menus::is_enabled(&app, "edit.redo"));
+    }
+
+    /// A History jump under a drawn frame would resize the document while the frame keeps its
+    /// coordinates, so Enter cropped the old ones (#9285): the panel's rows, snapshots and menu
+    /// wait for the crop, as they do for Free Transform.
+    #[test]
+    fn history_jumps_wait_for_a_pending_crop() {
+        let size = |app: &PhotocraftApp| app.session.active().map(|st| (st.doc.size.width, st.doc.size.height));
+        let mut app = app(SampleType::U8);
+        app.run("history.newSnapshot", json!({})).unwrap();
+        app.run("image.canvasSize", json!({"width": 300, "height": 200})).unwrap();
+        let snapshot = app.session.active().unwrap().snapshots[0].id;
+        app.ui.crop_rect = Some([220.0, 120.0, 290.0, 190.0]);
+        app.crop.default_frame = false;
+        for (cmd, p) in [
+            ("history.selectState", json!({"state": 0})),
+            ("history.selectSnapshot", json!({"snapshot": snapshot})),
+            ("history.stepBackward", json!({})),
+            ("history.deleteState", json!({})),
+        ] {
+            assert!(app.run(cmd, p).is_err(), "{cmd} waits for the crop");
+            assert_eq!(size(&app), Some((300, 200)), "{cmd} left the document as it was");
+        }
+        assert_eq!(app.ui.crop_rect, Some([220.0, 120.0, 290.0, 190.0]), "the frame stays");
+        // Without a drawn frame (the tool's own frame around the canvas) History works as before.
+        app.crop.default_frame = true;
+        app.run("history.selectState", json!({"state": 0})).unwrap();
+        assert_eq!(size(&app), Some((200, 100)));
+        app.run("history.stepForward", json!({})).unwrap();
+        assert_eq!(size(&app), Some((300, 200)));
     }
 
     #[test]
