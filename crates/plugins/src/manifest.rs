@@ -322,7 +322,7 @@ fn ordered_params<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result
                 }
                 // A repeated key would give one value two dialog controls, the last spec winning.
                 if out.iter().any(|(seen, _)| *seen == k) {
-                    return Err(serde::de::Error::custom(format!("parameter `{k}` is declared twice")));
+                    return Err(serde::de::Error::custom(format!("parameter {k:?} is declared twice")));
                 }
                 out.push((k, v));
             }
