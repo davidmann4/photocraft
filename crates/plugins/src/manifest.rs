@@ -320,6 +320,10 @@ fn ordered_params<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result
                 if out.len() >= MAX_PARAMS {
                     return Err(serde::de::Error::custom(format!("too many parameters (limit {MAX_PARAMS})")));
                 }
+                // A repeated key would give one value two dialog controls, the last spec winning.
+                if out.iter().any(|(seen, _)| *seen == k) {
+                    return Err(serde::de::Error::custom(format!("parameter `{k}` is declared twice")));
+                }
                 out.push((k, v));
             }
             Ok(out)
@@ -484,6 +488,17 @@ mod tests {
         }
         assert!(Manifest::parse(&[0xff, 0xfe]).is_err());
         assert!(Manifest::parse(&vec![b' '; MAX_MANIFEST_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn rejects_a_parameter_declared_twice() {
+        // Both entries were kept: two dialog controls for one value, and the last spec won.
+        let twice = br#"{"id":"a","name":"x","kind":"filter",
+            "params":{"n":{"type":"bool"},"n":{"type":"number","min":0,"max":1,"default":0}}}"#;
+        assert!(matches!(Manifest::parse(twice), Err(Error::Manifest(_))));
+        // Keys differing in case are different parameters.
+        let m = Manifest::parse(br#"{"id":"a","name":"x","kind":"filter","params":{"n":{"type":"bool"},"N":{"type":"bool"}}}"#).unwrap();
+        assert_eq!(m.params_notation(), r#"{"n":bool=false,"N":bool=false}"#);
     }
 
     /// Chromatic Aberration-like: a pixel shift, a pixel int, a signed pixel offset and a unitless
