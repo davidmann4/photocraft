@@ -220,10 +220,15 @@ fn in_memory(id: usvg::fontdb::ID, db: &mut Arc<usvg::fontdb::Database>) -> usvg
     use usvg::fontdb::Source;
     type Files = (HashMap<PathBuf, Arc<Vec<u8>>>, usize);
     static FILES: OnceLock<Mutex<Files>> = OnceLock::new();
+    static LOADING: Mutex<()> = Mutex::new(());
     let Some((Source::File(path), index)) = db.face_source(id) else { return id };
     let files = || FILES.get_or_init(Mutex::default).lock().unwrap_or_else(PoisonError::into_inner);
     let fits = |files: &Files, len: usize| files.1.saturating_add(len) <= MAX_CACHED_FONT_BYTES;
     let cached = files().0.get(&path).cloned();
+    // One miss at a time, so imports wanting the same file read it once: a second one waits
+    // here, then takes the bytes the first one kept.
+    let loading = cached.is_none().then(|| LOADING.lock().unwrap_or_else(PoisonError::into_inner));
+    let cached = cached.or_else(|| files().0.get(&path).cloned());
     let bytes = match cached {
         Some(b) => b,
         None => {
@@ -242,16 +247,15 @@ fn in_memory(id: usvg::fontdb::ID, db: &mut Arc<usvg::fontdb::Database>) -> usvg
                 return id;
             }
             let mut files = files();
-            if !files.0.contains_key(&path) {
-                if !fits(&files, b.len()) {
-                    return id;
-                }
-                files.1 = files.1.saturating_add(b.len());
-                files.0.insert(path.clone(), b.clone());
+            if !fits(&files, b.len()) {
+                return id;
             }
+            files.1 = files.1.saturating_add(b.len());
+            files.0.insert(path.clone(), b.clone());
             b
         }
     };
+    drop(loading);
     let db = Arc::make_mut(db);
     let same_file: Vec<_> = db.faces().filter(|f| matches!(&f.source, Source::File(p) if *p == path)).map(|f| f.id).collect();
     // Last first: fontdb's slots are reused last-freed-first, so the file's faces come back in
@@ -1232,6 +1236,49 @@ mod tests {
             layers.iter().any(|l| matches!(&l.content, LayerContent::Group(g) if g.children.iter().any(|c| matches!(&c.content, LayerContent::Shape(s) if !s.path.subpaths.is_empty())))),
             "the text has outlines"
         );
+    }
+
+    /// Imports that miss the cache for the same file at once read it once: every one sets its
+    /// text from the same bytes, not a copy of its own next to the kept one.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn imports_missing_the_same_font_at_once_share_one_read() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static ROUND: AtomicUsize = AtomicUsize::new(0);
+        fn fresh_file() -> Arc<usvg::fontdb::Database> {
+            let round = ROUND.load(Ordering::SeqCst);
+            let path = std::env::temp_dir().join(format!("photocraft-svg-test-shared-{}-{round}.ttf", std::process::id()));
+            let mut db = usvg::fontdb::Database::new();
+            db.load_font_file(&path).unwrap();
+            Arc::new(db)
+        }
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"60\"><text x=\"5\" y=\"45\" font-family=\"Inter\">IHI</text></svg>";
+        for round in 0..5 {
+            ROUND.store(round, Ordering::SeqCst);
+            let path = std::env::temp_dir().join(format!("photocraft-svg-test-shared-{}-{round}.ttf", std::process::id()));
+            std::fs::write(&path, include_bytes!("../../../assets/fonts/Inter-Regular.ttf")).unwrap();
+            let start = Arc::new(std::sync::Barrier::new(8));
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    let start = start.clone();
+                    std::thread::spawn(move || {
+                        start.wait();
+                        let parsed = parse_with(svg, fresh_file).unwrap();
+                        let bytes: Vec<_> = parsed
+                            .tree
+                            .fontdb()
+                            .faces()
+                            .filter_map(|f| if let usvg::fontdb::Source::Binary(b) = &f.source { Some(Arc::as_ptr(b).cast::<u8>() as usize) } else { None })
+                            .collect();
+                        bytes
+                    })
+                })
+                .collect();
+            let bytes: Vec<_> = threads.into_iter().flat_map(|t| t.join().unwrap()).collect();
+            assert_eq!(bytes.len(), 8, "every import set its text from memory");
+            assert!(bytes.iter().all(|&b| b == bytes[0]), "round {round}: {bytes:x?}");
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     /// #9406: moving a font collection into memory keeps its faces in their order, so the
