@@ -419,6 +419,13 @@ pub fn active(app: &PhotocraftApp) -> bool {
     app.ui.tool == Tool::Crop && app.crop.drag.is_some()
 }
 
+/// A drag that sizes or moves the frame over the image, which scrolls the view when held past the
+/// canvas edge (#4183). Not the turns, nor the default mode's image moves and live-centred resizes:
+/// those drive the camera themselves.
+pub fn autoscrolls(app: &PhotocraftApp) -> bool {
+    app.ui.tool == Tool::Crop && matches!(app.crop.drag, Some(CropDrag::Draw { .. } | CropDrag::Move { .. } | CropDrag::Resize { view: None, .. }))
+}
+
 /// Cancel the pending crop: the frame, any gesture on it and the default-frame state. With the
 /// Crop tool still picked, [`ensure_frame`] then makes the active document a new default frame.
 pub fn cancel(app: &mut PhotocraftApp) {
@@ -1534,6 +1541,60 @@ mod tests {
         assert_eq!(st.ui.crop_rect, Some(moved));
         assert_eq!(st.ui.views[0].center, view.center, "the view did not pan");
         assert!(st.crop.drag.is_none());
+    }
+
+    /// Real egui input: a handle dragged past the canvas edge and held there scrolls the view, as a
+    /// marquee drag does (#4183), so the frame can reach the part of the image that was off screen.
+    #[test]
+    fn a_handle_held_past_the_canvas_edge_scrolls_the_view() {
+        use egui::{Event, PointerButton, pos2};
+        let mut a = app(SampleType::U8);
+        // 200x100 at 400% in a 600x400 canvas: document x 25..175 shows.
+        a.ui.views = vec![crate::state::View {
+            zoom: 4.0,
+            center: [100.0, 50.0],
+            fit_pending: false,
+            fill_pending: false,
+            doc_size: [200, 100],
+            rotation: 0.0,
+            zoom_animating: false,
+            zoom_anchor: None,
+            display_camera: None,
+            zoom_transition: None,
+        }];
+        a.ui.crop_rect = Some([40.0, 10.0, 100.0, 40.0]);
+        a.crop.default_frame = false;
+        a.ui.extras.rulers = false;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 400.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                let v = app.ui.views[0].clone();
+                crate::canvas::canvas_view(app, ui, 0, ui.max_rect(), v, true);
+            },
+            a,
+        );
+        h.run_steps(2);
+        let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        // The right edge's middle handle: document (100, 25).
+        let p0 = h.state().ui.views[0].center;
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0));
+        let xf = crate::canvas::ViewXform { rect, zoom: 4.0, center: p0, flip: false, rotation: 0.0, aspect: 1.0 };
+        let grab = xf.to_screen(100.0, 25.0);
+        h.event(Event::PointerMoved(grab));
+        h.event(button(grab, true));
+        h.step();
+        let out = pos2(650.0, grab.y);
+        for p in [pos2(grab.x + 40.0, grab.y), out] {
+            h.event(Event::PointerMoved(p));
+            h.step();
+        }
+        let before = h.state().ui.views[0].center;
+        h.run_steps(10);
+        let st = h.state();
+        assert!(matches!(st.crop.drag, Some(CropDrag::Resize { .. })), "{:?}", st.crop.drag);
+        assert!(st.ui.views[0].center[0] > before[0], "the view scrolled right: {:?} -> {:?}", before, st.ui.views[0].center);
+        assert!(st.ui.crop_rect.is_some_and(|r| r[2] > 175.0), "the frame reached past what showed: {:?}", st.ui.crop_rect);
+        h.event(button(out, false));
+        h.step();
     }
 
     /// #1918: a pending crop belongs to the document it was drawn on. File › New, opening a file

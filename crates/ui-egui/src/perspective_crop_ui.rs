@@ -53,6 +53,11 @@ pub fn pending(app: &PhotocraftApp) -> bool {
     app.ui.perspective_crop.is_some() || !app.pcrop.clicks.is_empty() || app.pcrop.drag.is_some()
 }
 
+/// A box, corner or quad drag in progress: held past the canvas edge, it scrolls the view (#4183).
+pub fn dragging(app: &PhotocraftApp) -> bool {
+    app.ui.tool == Tool::PerspectiveCrop && app.pcrop.drag.is_some()
+}
+
 pub fn cancel(app: &mut PhotocraftApp) {
     app.ui.perspective_crop = None;
     app.pcrop.drag = None;
@@ -325,6 +330,63 @@ mod tests {
         ev(&mut app, ToolEvent::Up { x: 30.0, y: 30.0 });
         assert_eq!(app.pcrop.clicks, vec![[30.0, 30.0]]);
         assert_eq!(app.ui.perspective_crop, None);
+    }
+
+    /// Real egui input: a corner dragged past the canvas edge and held there scrolls the view, as a
+    /// marquee drag does (#4183), so the corner can reach the part of the image that was off screen.
+    #[test]
+    fn a_corner_held_past_the_canvas_edge_scrolls_the_view() {
+        use egui::{Event, Modifiers, PointerButton, pos2};
+        let doc = Document::with_background("p", Size::new(200, 100), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        let mut s = photocraft_engine::Session::new();
+        s.add_document(doc, None);
+        let mut a = PhotocraftApp::new(s, crate::Services::default());
+        a.ui.tool = Tool::PerspectiveCrop;
+        a.ui.extras.snap = false;
+        a.ui.extras.rulers = false;
+        // 200x100 at 400% in a 600x400 canvas: document x 25..175 shows.
+        a.ui.views = vec![crate::state::View {
+            zoom: 4.0,
+            center: [100.0, 50.0],
+            fit_pending: false,
+            fill_pending: false,
+            doc_size: [200, 100],
+            rotation: 0.0,
+            zoom_animating: false,
+            zoom_anchor: None,
+            display_camera: None,
+            zoom_transition: None,
+        }];
+        a.ui.perspective_crop = Some([[40.0, 10.0], [100.0, 10.0], [100.0, 40.0], [40.0, 40.0]]);
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 400.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                let v = app.ui.views[0].clone();
+                crate::canvas::canvas_view(app, ui, 0, ui.max_rect(), v, true);
+            },
+            a,
+        );
+        h.run_steps(2);
+        let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0));
+        let xf = crate::canvas::ViewXform { rect, zoom: 4.0, center: [100.0, 50.0], flip: false, rotation: 0.0, aspect: 1.0 };
+        // The top-right corner: document (100, 10).
+        let grab = xf.to_screen(100.0, 10.0);
+        h.event(Event::PointerMoved(grab));
+        h.event(button(grab, true));
+        h.step();
+        let out = pos2(650.0, grab.y);
+        for p in [pos2(grab.x + 40.0, grab.y), out] {
+            h.event(Event::PointerMoved(p));
+            h.step();
+        }
+        let before = h.state().ui.views[0].center;
+        h.run_steps(10);
+        let st = h.state();
+        assert!(matches!(st.pcrop.drag, Some(Drag::Corner { index: 1, .. })), "{:?}", st.pcrop.drag);
+        assert!(st.ui.views[0].center[0] > before[0], "the view scrolled right: {:?} -> {:?}", before, st.ui.views[0].center);
+        assert!(st.ui.perspective_crop.is_some_and(|q| q[1][0] > 175.0), "the corner reached past what showed: {:?}", st.ui.perspective_crop);
+        h.event(button(out, false));
+        h.step();
     }
 
     /// A box drag makes the quad, corners drag alone, and ↵'s commit crops the document to the
