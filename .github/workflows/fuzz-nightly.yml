@@ -98,6 +98,12 @@ jobs:
           path: crates/${{ matrix.target.crate }}/fuzz/corpus/${{ matrix.target.name }}
           key: fuzz-corpus-${{ matrix.target.crate }}-${{ matrix.target.name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: fuzz-corpus-${{ matrix.target.crate }}-${{ matrix.target.name }}-
+      # libFuzzer seldom builds a ZIP with valid CRCs and the XML Krita or OpenRaster need from
+      # nothing, so those targets also start from small valid files (a no-op for the others).
+      - name: Seed corpus
+        if: matrix.target.crate == 'io'
+        working-directory: crates/io/fuzz
+        run: python3 seeds.py ${{ matrix.target.name }}
       - name: Fuzz
         working-directory: crates/${{ matrix.target.crate }}
         env:
@@ -111,8 +117,10 @@ jobs:
         if: success()
         working-directory: crates/${{ matrix.target.crate }}
         run: cargo fuzz cmin ${{ matrix.target.name }} ${{ matrix.target.args }} -- -malloc_limit_mb=9216 -rss_limit_mb=12288 -timeout=30
+      # Also after a crash (the input is in artifacts/, not the corpus), so the coverage that run
+      # found isn't lost; the corpus then stays unminimised until the next green night.
       - name: Save corpus
-        if: success()
+        if: ${{ !cancelled() && hashFiles(format('crates/{0}/fuzz/corpus/{1}/**', matrix.target.crate, matrix.target.name)) != '' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: crates/${{ matrix.target.crate }}/fuzz/corpus/${{ matrix.target.name }}

@@ -1,6 +1,7 @@
 #![no_main]
-//! Import arbitrary bytes as GIMP .xcf through the same entry point File › Open uses. The
-//! `.xcf.gz` name lets gzip input reach the bounded inflate; raw XCF is still found by its magic.
+//! Import arbitrary bytes as GIMP .xcf through the same entry point File › Open uses. Gzip input
+//! is named `.xcf.gz` so it reaches the bounded inflate; anything else is named `.xcf`, which sends
+//! it to the XCF parser even without the `gimp xcf` magic.
 
 use libfuzzer_sys::fuzz_target;
 
@@ -10,5 +11,6 @@ fuzz_target!(|data: &[u8]| {
     if photocraft_codecs::detect(data).is_some() || data.starts_with(b"8BPS") {
         return;
     }
-    let _ = photocraft_io::import("fuzz.xcf.gz", data);
+    let name = if data.starts_with(&[0x1f, 0x8b]) { "fuzz.xcf.gz" } else { "fuzz.xcf" };
+    let _ = photocraft_io::import(name, data);
 });
