@@ -214,11 +214,14 @@ fn image_size(s: &mut Session, p: &Value) -> Result<Value> {
         ph = ph.or(Some(oh as f64 * pc / 100.0));
     }
     // The document range File › New and the dialog's field allow; outside it, refuse rather than
-    // clamp (#9260: 1e39 became inf as f32, then silently 10000 ppi).
+    // clamp (#9260: 1e39 became inf as f32, then silently 10000 ppi). The document's own
+    // resolution always passes: an imported file may have one outside the range, and the dialog
+    // sends it back unchanged.
     let dpi = match p.get("resolution") {
         None | Some(Value::Null) => None,
         Some(v) => {
-            let r = v.as_f64().filter(|r| r.is_finite() && (1.0..=MAX_RESOLUTION).contains(r));
+            let own = |r: f64| r as f32 == d.doc.resolution_dpi;
+            let r = v.as_f64().filter(|&r| r.is_finite() && ((1.0..=MAX_RESOLUTION).contains(&r) || own(r)));
             Some(r.ok_or_else(|| bad("image.imageSize", format!("`resolution` = {v} must be a number of pixels per inch from 1 to {MAX_RESOLUTION}")))?)
         }
     };
@@ -1298,6 +1301,19 @@ mod tests {
         assert_eq!((doc(&s).size, doc(&s).resolution_dpi), (Size::new(40, 20), 20_000.0));
         s.execute("image.imageSize", json!({"resolution": null, "resample": "none"})).unwrap();
         assert_eq!(doc(&s).resolution_dpi, 20_000.0, "null leaves the resolution as it is");
+        // An imported document's own resolution outside the range (a PNG pHYs of 1 px/m is
+        // 0.0254 ppi) still resizes: the Image Size dialog sends it back unchanged on OK.
+        for own in [0.0254_f32, 40_000.0] {
+            let mut s = session();
+            s.edit("ppi", |doc, _| {
+                doc.resolution_dpi = own;
+                Ok(())
+            })
+            .unwrap();
+            s.execute("image.imageSize", json!({"width": 80, "height": 40, "resolution": f64::from(own), "resample": "bicubic"})).unwrap();
+            assert_eq!((doc(&s).size, doc(&s).resolution_dpi), (Size::new(80, 40), own), "{own}");
+            assert!(s.execute("image.imageSize", json!({"resolution": 0.03, "resample": "none"})).is_err(), "{own}: another value is still checked");
+        }
     }
 
     /// Type keeps its pixel size across a resolution change: resampled 2x at twice the ppi it is
