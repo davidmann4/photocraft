@@ -425,7 +425,8 @@ fn export_data_sets_rejects_collisions_before_writing() {
 fn export_data_sets_keeps_document_derived_names_inside_the_folder() {
     // A document name is not a path: `{document}` must not climb out of `dir` or into a subfolder,
     // and a data set named after a Windows device gets the `_` every other exporter gives it.
-    let root = tmp("names-inside");
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().to_string_lossy().into_owned();
     let dir = format!("{root}/out");
     let mut s = visibility_export_session(&["nul", "b"]);
     s.execute("image.duplicate", json!({"name": "../esc/aped.psd"})).unwrap();
@@ -437,12 +438,20 @@ fn export_data_sets_keeps_document_derived_names_inside_the_folder() {
     s.execute("image.duplicate", json!({"name": "..."})).unwrap();
     let r = s.execute("file.export.dataSetsAsFiles", json!({"dir": dir, "dataSets": ["b"], "naming": "{document}/{name}"})).unwrap();
     assert_eq!(r["files"], json!([format!("{dir}/_/b.png")]));
+    // `.` has an empty stem: `{document}` alone would be a nameless `.png`.
+    s.execute("image.duplicate", json!({"name": "."})).unwrap();
+    let r = s.execute("file.export.dataSetsAsFiles", json!({"dir": dir, "dataSets": ["b"], "naming": "{document}"})).unwrap();
+    assert_eq!(r["files"], json!([format!("{dir}/_.png")]));
+    // A folder the template makes from a device-named document gets the `_` as well.
+    s.execute("image.duplicate", json!({"name": "nul.psd"})).unwrap();
+    let r = s.execute("file.export.dataSetsAsFiles", json!({"dir": dir, "dataSets": ["b"], "naming": "{document}/{name}"})).unwrap();
+    assert_eq!(r["files"], json!([format!("{dir}/nul_/b.png")]));
     let mut written: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     written.sort();
-    assert_eq!(written, [".._esc_aped_001.png", ".._esc_aped_002.png", "_", "nul_.png"]);
+    assert_eq!(written, [".._esc_aped_001.png", ".._esc_aped_002.png", "_", "_.png", "nul_", "nul_.png"]);
+    assert!(std::path::Path::new(&format!("{dir}/nul_/b.png")).is_file());
     assert!(!std::path::Path::new(&format!("{root}/esc")).exists());
     assert!(!std::path::Path::new(&format!("{root}/b.png")).exists());
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
