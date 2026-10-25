@@ -400,7 +400,33 @@ fn paste_into(s: &mut Session, p: &Value, outside: bool) -> Result<Value> {
 /// The canvas grown to every layer's pixels: Image › Reveal All's new canvas, and what the Crop
 /// tool shows while a frame is edited.
 pub fn reveal_all_bounds(doc: &Document) -> Rect {
-    doc.walk().into_iter().filter_map(|(_, _, l)| l.surface().map(|s| s.content_bounds())).fold(doc.bounds(), |a, b| a.union(&b))
+    let canvas = doc.bounds();
+    doc.walk().into_iter().filter_map(|(_, _, l)| l.surface().map(|s| visible_bounds(s, canvas))).fold(canvas, |a, b| a.union(&b))
+}
+
+/// Bounds of `s`'s pixels with alpha > 0, as Photoshop's layer bounds (#9379): the Eraser only
+/// clears alpha, so an erased pixel keeps its colour bytes and `content_bounds` counts it. Tiles
+/// inside `canvas` can't grow the canvas and are skipped.
+fn visible_bounds(s: &photocraft_raster::Surface, canvas: Rect) -> Rect {
+    let fmt = s.format();
+    if !fmt.alpha || s.default_pixel().last().is_none_or(|a| *a > 0.0) {
+        return s.content_bounds();
+    }
+    let (n, side) = (fmt.channels(), photocraft_geom::TILE_SIZE as usize);
+    let mut out = Rect::EMPTY;
+    for (c, t) in s.tiles() {
+        let o = c.rect();
+        if canvas.contains_rect(&o) {
+            continue;
+        }
+        for (i, px) in t.bytes().chunks_exact(fmt.bytes_per_pixel()).enumerate() {
+            if photocraft_color::read_sample(px, fmt.sample, n - 1) > 0.0 {
+                let (x, y) = (o.x0 + (i % side) as i32, o.y0 + (i / side) as i32);
+                out = out.union(&Rect::new(x, y, x + 1, y + 1));
+            }
+        }
+    }
+    out
 }
 
 // ---------- layers ----------
@@ -1758,6 +1784,28 @@ mod tests {
         assert_eq!(history.past_len(), steps + 1, "one step");
         assert_eq!(history.entries().last().map(String::as_str), Some("Reveal All"), "named as in Photoshop, not Crop");
         assert_eq!(s.execute("image.revealAll", json!({})).unwrap()["changed"], false);
+    }
+
+    #[test]
+    fn reveal_all_skips_erased_pixels() {
+        // #9379: the Eraser only clears alpha, so erased pixels keep their colour bytes; Reveal
+        // All grew the canvas to them although nothing there is visible.
+        // No Background: its off-canvas pixels are opaque and would be revealed anyway.
+        for depth in [8, 16, 32] {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 40, "height": 30, "depth": depth, "background": "transparent"})).unwrap();
+            paint_square(&mut s, Rect::new(0, 0, 40, 30), [1.0, 0.0, 0.0, 1.0]);
+            let erase = json!({"points": [[32, -10], [32, 40]], "size": 28, "erase": true, "brush": {"hardness": 1.0}});
+            s.execute("paint.stroke", erase).unwrap();
+            assert_eq!(pixel(&s, 30, 15)[3], 0.0, "{depth}: erased");
+            s.execute("image.canvasSize", json!({"width": 20, "height": 30, "anchor": "topLeft"})).unwrap();
+            assert_eq!(s.execute("image.revealAll", json!({})).unwrap()["changed"], false, "{depth}");
+            assert_eq!((doc(&s).size.width, doc(&s).size.height), (20, 30), "{depth}");
+            // A pixel that is only partly erased is still there to reveal.
+            paint_square(&mut s, Rect::new(25, 5, 26, 6), [0.0, 0.0, 1.0, 0.5]);
+            assert_eq!(s.execute("image.revealAll", json!({})).unwrap()["changed"], true, "{depth}");
+            assert_eq!((doc(&s).size.width, doc(&s).size.height), (26, 30), "{depth}");
+        }
     }
 
     #[test]
