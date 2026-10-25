@@ -316,14 +316,16 @@ fn ordered_params<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result
         }
         fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> std::result::Result<Self::Value, A::Error> {
             let mut out = Vec::new();
-            while let Some((k, v)) = map.next_entry::<String, ParamSpec>()? {
-                if out.len() >= MAX_PARAMS {
-                    return Err(serde::de::Error::custom(format!("too many parameters (limit {MAX_PARAMS})")));
-                }
+            while let Some(k) = map.next_key::<String>()? {
                 // A repeated key would give one value two dialog controls, the last spec winning.
+                // Named before its spec is read or counted, so the error is about the key.
                 if out.iter().any(|(seen, _)| *seen == k) {
                     return Err(serde::de::Error::custom(format!("parameter {k:?} is declared twice")));
                 }
+                if out.len() >= MAX_PARAMS {
+                    return Err(serde::de::Error::custom(format!("too many parameters (limit {MAX_PARAMS})")));
+                }
+                let v = map.next_value::<ParamSpec>()?;
                 out.push((k, v));
             }
             Ok(out)
@@ -496,6 +498,14 @@ mod tests {
         let twice = br#"{"id":"a","name":"x","kind":"filter",
             "params":{"n":{"type":"bool"},"n":{"type":"number","min":0,"max":1,"default":0}}}"#;
         assert!(matches!(Manifest::parse(twice), Err(Error::Manifest(_))));
+        // The error names the key, also when the second spec is broken or past the limit.
+        let broken = br#"{"id":"a","name":"x","kind":"filter","params":{"n":{"type":"bool"},"n":{"type":"nope"}}}"#;
+        let many: Vec<String> = (0..MAX_PARAMS).map(|i| format!(r#""p{i}":{{"type":"bool"}}"#)).collect();
+        let past = format!(r#"{{"id":"a","name":"x","kind":"filter","params":{{{},"p0":{{"type":"bool"}}}}}}"#, many.join(","));
+        for (json, key) in [(&broken[..], "n"), (past.as_bytes(), "p0")] {
+            let e = Manifest::parse(json).err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(e.contains(&format!("parameter {key:?} is declared twice")), "{e}");
+        }
         // Keys differing in case are different parameters.
         let m = Manifest::parse(br#"{"id":"a","name":"x","kind":"filter","params":{"n":{"type":"bool"},"N":{"type":"bool"}}}"#).unwrap();
         assert_eq!(m.params_notation(), r#"{"n":bool=false,"N":bool=false}"#);
