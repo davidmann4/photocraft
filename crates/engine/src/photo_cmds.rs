@@ -829,6 +829,45 @@ fn merge_to_hdr(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ---------- Crop and Straighten Photos ----------
 
+/// Paints the pixels outside the selection (holes, gaps between regions) in
+/// the median colour of the selection's edge, so detection sees them as
+/// background and finds no photo there.
+fn mask_unselected(sel: &Surface, area: Rect, w: usize, h: usize, rgba: &mut [[f32; 4]]) {
+    let mut cov = Vec::new();
+    sel.read_region_into(area, &mut cov);
+    let ch = sel.channels().max(1);
+    let inside: Vec<bool> = cov.chunks_exact(ch).map(|p| p[0] >= 0.5).collect();
+    if inside.len() != w * h || rgba.len() != w * h || inside.iter().all(|&b| b) {
+        return;
+    }
+    let is_in = |x: usize, y: usize| inside.get(y * w + x).copied().unwrap_or(false);
+    let mut edge = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let on_edge = x == 0 || y == 0 || x + 1 == w || y + 1 == h || !is_in(x - 1, y) || !is_in(x + 1, y) || !is_in(x, y - 1) || !is_in(x, y + 1);
+            if is_in(x, y)
+                && on_edge
+                && let Some(q) = rgba.get(y * w + x)
+            {
+                edge.push(*q);
+            }
+        }
+    }
+    if edge.is_empty() {
+        return;
+    }
+    let bg: [f32; 4] = std::array::from_fn(|c| {
+        let mut v: Vec<f32> = edge.iter().map(|p| p[c]).collect();
+        v.sort_by(f32::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(1.0)
+    });
+    for (q, &keep) in rgba.iter_mut().zip(&inside) {
+        if !keep {
+            *q = bg;
+        }
+    }
+}
+
 fn crop_and_straighten(s: &mut Session, _p: &Value) -> Result<Value> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let doc = st.doc.clone();
@@ -851,6 +890,9 @@ fn crop_and_straighten(s: &mut Session, _p: &Value) -> Result<Value> {
                 *v = *v * a + (1.0 - a);
             }
         }
+    }
+    if let Some(sel) = &doc.selection {
+        mask_unselected(sel, area, w, h, &mut rgba);
     }
     let mut found = scancrop::find_photos(w, h, &rgba);
     for f in &mut found {
@@ -1211,6 +1253,35 @@ mod tests {
         s.execute("select.deselect", json!({})).unwrap();
         let r = s.execute("file.automate.cropAndStraightenPhotos", json!({})).unwrap();
         assert_eq!(r["photos"].as_array().unwrap().len(), 2, "{r}");
+    }
+
+    #[test]
+    fn crop_and_straighten_skips_photos_between_selected_regions() {
+        // Two selected rectangles: a photo in the gap between them lies inside
+        // their bounding box but outside the selection, so it is not split off.
+        let (w, h) = (480usize, 340usize);
+        let mut px = vec![[0.75f32, 0.75, 0.75, 1.0]; w * h];
+        // Red 160x110 at (40, 60) and blue 150x120 at (290, 180) are selected; green 130x80 at (280, 50) is not.
+        for (x0, y0, pw, ph, c) in
+            [(40, 60, 160, 110, [0.6f32, 0.1, 0.1, 1.0]), (290, 180, 150, 120, [0.1, 0.2, 0.6, 1.0]), (280, 50, 130, 80, [0.1, 0.6, 0.1, 1.0])]
+        {
+            for y in y0..y0 + ph {
+                px[y * w + x0..y * w + x0 + pw].fill(c);
+            }
+        }
+        let mut s = Session::new();
+        s.add_document(doc_from("scan", &px, w, h, SampleType::U8), None);
+        s.execute("select.rect", json!({"x": 20, "y": 40, "width": 200, "height": 150})).unwrap();
+        s.execute("select.rect", json!({"x": 270, "y": 160, "width": 190, "height": 160, "mode": "add"})).unwrap();
+        let r = s.execute("file.automate.cropAndStraightenPhotos", json!({})).unwrap();
+        let found = r["photos"].as_array().unwrap();
+        assert_eq!(found.len(), 2, "{r}");
+        for f in found {
+            let c = &f["center"];
+            let (cx, cy) = (c[0].as_f64().unwrap(), c[1].as_f64().unwrap());
+            let near = |x: f64, y: f64| (cx - x).abs() < 3.0 && (cy - y).abs() < 3.0;
+            assert!(near(120.0, 115.0) || near(365.0, 240.0), "{c}");
+        }
     }
 
     #[test]
