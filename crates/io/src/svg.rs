@@ -105,10 +105,13 @@ const MAX_PEAK_PIXEL_BYTES: u64 = 3 << 29;
 const MAX_NODES: usize = 2_000;
 /// Nesting past which a subtree is rasterised instead of walked (bounded recursion).
 const MAX_RECURSION: usize = 200;
-/// Most filter work a drawing may ask of resvg, in pixel reads (see [`filter_cost`]): about ten
-/// seconds in a release build (resvg manages roughly 200 million reads a second, and its filters
-/// can't be interrupted).
+/// Most filter work beyond the ordinary a drawing may ask of resvg, in pixel reads (see
+/// [`filter_cost`]): about ten seconds in a release build (resvg manages roughly 200 million reads
+/// a second, and its filters can't be interrupted).
 const MAX_FILTER_COST: u64 = 2_000_000_000;
+/// Reads per pixel any primitive may take for free (a 16 × 16 morphology window or kernel, 16
+/// turbulence octaves), so ordinary filters open on any canvas.
+const ORDINARY_FILTER_READS: u64 = 256;
 /// One `feTurbulence` octave per pixel, in pixel reads (it measures about 15 times a read).
 const TURBULENCE_OCTAVE_COST: u64 = 16;
 /// Deepest element nesting accepted. The XML parser recurses once per level, so a file nested
@@ -480,16 +483,17 @@ fn count_nodes(root: &usvg::Group) -> usize {
     n
 }
 
-/// The work resvg's filters would do to render the drawing at `scale` canvas px per unit, in
-/// pixel reads: its morphology reads the whole radius window per pixel, convolution the whole
-/// kernel, and turbulence runs every octave (usvg doesn't clamp `numOctaves`). Masks, clip paths,
-/// patterns and embedded drawings count too.
-fn filter_cost(root: &usvg::Group, scale: f32, rec: usize) -> u64 {
+/// The work beyond [`ORDINARY_FILTER_READS`] per pixel that resvg's filters would do to render
+/// the drawing through `base` (drawing units to canvas px), in pixel reads: its morphology reads
+/// the whole radius window per pixel, convolution the whole kernel, and turbulence runs every
+/// octave (usvg doesn't clamp `numOctaves`). Masks, clip paths, patterns and embedded drawings
+/// count too, at the scale of the element that uses them, as resvg renders them.
+fn filter_cost(root: &usvg::Group, base: tiny_skia::Transform, rec: usize) -> u64 {
     use usvg::filter::Kind;
     let mut cost = 0u64;
     let mut stack: Vec<&usvg::Group> = vec![root];
     while let Some(g) = stack.pop() {
-        let ts = tiny_skia::Transform::from_scale(scale, scale).pre_concat(g.abs_transform());
+        let ts = base.pre_concat(g.abs_transform());
         let (sx, sy) = ts.get_scale();
         for f in g.filters() {
             let Some(r) = f.rect().transform(ts) else { continue };
@@ -501,17 +505,30 @@ fn filter_cost(root: &usvg::Group, scale: f32, rec: usize) -> u64 {
                     Kind::ConvolveMatrix(c) => u64::from(c.matrix().columns()) * u64::from(c.matrix().rows()),
                     Kind::Morphology(m) => window(m.radius_x().get(), sx, w).saturating_mul(window(m.radius_y().get(), sy, h)),
                     Kind::Turbulence(t) => u64::from(t.num_octaves()).saturating_mul(TURBULENCE_OCTAVE_COST),
-                    _ => 1,
+                    _ => 0,
                 };
-                cost = cost.saturating_add(w.saturating_mul(h).saturating_mul(reads.max(1)));
+                cost = cost.saturating_add(w.saturating_mul(h).saturating_mul(reads.saturating_sub(ORDINARY_FILTER_READS)));
             }
         }
         for node in g.children() {
             if let usvg::Node::Group(child) = node {
                 stack.push(child);
             }
-            if rec < MAX_RECURSION {
-                node.subroots(|sub| cost = cost.saturating_add(filter_cost(sub, scale, rec + 1)));
+            if rec >= MAX_RECURSION {
+                continue;
+            }
+            let world = base.pre_concat(node.abs_transform());
+            let mut sub = |root: &usvg::Group, ts: tiny_skia::Transform| cost = cost.saturating_add(filter_cost(root, ts, rec + 1));
+            match node {
+                // resvg draws a pattern's tile at the path's scale times the pattern's own.
+                usvg::Node::Path(p) => {
+                    for paint in [p.fill().map(|f| f.paint()), p.stroke().map(|s| s.paint())].into_iter().flatten() {
+                        if let usvg::Paint::Pattern(pt) = paint {
+                            sub(pt.root(), world.pre_concat(pt.transform()));
+                        }
+                    }
+                }
+                _ => node.subroots(|root| sub(root, world)),
             }
         }
     }
@@ -520,7 +537,7 @@ fn filter_cost(root: &usvg::Group, scale: f32, rec: usize) -> u64 {
 
 /// An error when the drawing's filters are too costly to render at `scale` (see [`filter_cost`]).
 fn check_filter_cost(tree: &usvg::Tree, scale: f32) -> Result<(), IoError> {
-    if filter_cost(tree.root(), scale, 0) > MAX_FILTER_COST {
+    if filter_cost(tree.root(), tiny_skia::Transform::from_scale(scale, scale), 0) > MAX_FILTER_COST {
         return Err(IoError::Svg(
             "the drawing's filters are too costly to render (a huge morphology radius, convolution kernel or turbulence octave count)".into(),
         ));
@@ -973,6 +990,22 @@ mod tests {
         assert!(!is_svg(b"<?xml version=\"1.0\"?><x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>"));
         assert!(!is_svg(b"\x89PNG\r\n"));
         assert!(!is_svg(b""));
+    }
+
+    /// Ordinary filters, however many and on the largest canvas, never count against the budget.
+    #[test]
+    fn ordinary_filters_cost_nothing_on_any_canvas() {
+        let svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{MAX_SIDE}\" height=\"{MAX_SIDE}\"><filter id=\"f\">\
+             <feGaussianBlur stdDeviation=\"20\"/><feOffset dx=\"5\" dy=\"5\"/><feFlood flood-color=\"black\"/>\
+             <feComposite operator=\"in\" in2=\"SourceAlpha\"/><feMerge><feMergeNode/><feMergeNode in=\"SourceGraphic\"/></feMerge>\
+             <feMorphology radius=\"8\"/><feConvolveMatrix order=\"5\" kernelMatrix=\"{}\"/><feTurbulence baseFrequency=\"0.02\" numOctaves=\"10\"/>\
+             </filter><rect width=\"{MAX_SIDE}\" height=\"{MAX_SIDE}\" filter=\"url(#f)\"/></svg>",
+            vec!["1"; 25].join(" ")
+        );
+        let tree = parse(svg.as_bytes()).unwrap().tree;
+        assert_eq!(filter_cost(tree.root(), tiny_skia::Transform::identity(), 0), 0);
+        assert!(check_filter_cost(&tree, 1.0).is_ok());
     }
 
     #[test]

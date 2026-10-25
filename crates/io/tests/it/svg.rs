@@ -423,18 +423,27 @@ fn filters_too_costly_to_render_are_refused_not_run() {
         )
     };
     let kernel = vec!["1"; 100 * 100].join(" ");
-    let in_mask = format!(
-        "<svg {NS} width=\"2000\" height=\"2000\"><filter id=\"f\"><feMorphology radius=\"1000\"/></filter><mask id=\"m\"><rect width=\"2000\" height=\"2000\" fill=\"white\" filter=\"url(#f)\"/></mask><rect width=\"2000\" height=\"2000\" mask=\"url(#m)\"/></svg>"
-    );
+    // Masks, patterns and embedded drawings filter at the scale of the element using them: a
+    // 20-unit radius-10 morphology drawn 100× larger.
+    let f = "<filter id=\"f\"><feMorphology radius=\"10\"/></filter>";
+    let inner = format!("<svg {NS} width=\"20\" height=\"20\">{f}<rect width=\"20\" height=\"20\" filter=\"url(#f)\"/></svg>");
+    let embedded = base64_data_url("image/svg+xml", inner.as_bytes());
     for svg in [
         drawing(2000, "<feMorphology operator=\"dilate\" radius=\"1000\"/>"),
         drawing(2000, &format!("<feConvolveMatrix order=\"100\" kernelMatrix=\"{kernel}\"/>")),
         drawing(2000, "<feTurbulence baseFrequency=\"0.01\" numOctaves=\"1000000\"/>"),
-        in_mask,
+        format!(
+            "<svg {NS} width=\"2000\" height=\"2000\" viewBox=\"0 0 20 20\">{f}<mask id=\"m\"><rect width=\"20\" height=\"20\" fill=\"white\" filter=\"url(#f)\"/></mask><rect width=\"20\" height=\"20\" mask=\"url(#m)\"/></svg>"
+        ),
+        format!(
+            "<svg {NS} width=\"2000\" height=\"2000\">{f}<pattern id=\"p\" width=\"20\" height=\"20\" patternUnits=\"userSpaceOnUse\" patternTransform=\"scale(100)\"><rect width=\"20\" height=\"20\" filter=\"url(#f)\"/></pattern><rect width=\"2000\" height=\"2000\" fill=\"url(#p)\"/></svg>"
+        ),
+        format!("<svg {NS} width=\"2000\" height=\"2000\"><image width=\"2000\" height=\"2000\" href=\"{embedded}\"/></svg>"),
     ] {
-        let e = import("x.svg", svg.as_bytes()).err().unwrap_or_else(|| panic!("opened: {}", &svg[..200]));
+        let head: String = svg.chars().take(300).collect();
+        let e = import("x.svg", svg.as_bytes()).err().unwrap_or_else(|| panic!("opened: {head}"));
         assert!(matches!(&e, IoError::Svg(m) if m.contains("filter")), "{e}");
-        assert!(svg::rasterize(svg.as_bytes(), 1.0).is_err(), "rendered: {}", &svg[..200]);
+        assert!(svg::rasterize(svg.as_bytes(), 1.0).is_err(), "rendered: {head}");
     }
     // Ordinary filters still open and render.
     let ordinary = drawing(500, "<feGaussianBlur stdDeviation=\"8\"/><feMorphology radius=\"3\"/><feTurbulence baseFrequency=\"0.05\" numOctaves=\"4\"/>");
