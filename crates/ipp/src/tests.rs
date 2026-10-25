@@ -609,11 +609,15 @@ fn the_chunk_walk_resumes_instead_of_starting_over() {
     assert!(at > 0, "it moved past the chunks already walked");
 }
 
-/// A reader handing out `step` bytes per read, like a print server dripping its reply.
+/// A reader handing out `step` bytes per read, like a print server dripping its reply, that then
+/// keeps the connection open: a read past the reply times out instead of ending the stream.
 struct Trickle<'a>(&'a [u8], usize);
 
 impl Read for Trickle<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.0.is_empty() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
         let n = self.1.min(buf.len()).min(self.0.len());
         buf[..n].copy_from_slice(&self.0[..n]);
         self.0 = &self.0[n..];
@@ -640,7 +644,8 @@ fn http_bytes(reply: &[u8], chunked: bool, http_status: u16) -> Vec<u8> {
 }
 
 /// The fuzz entry point decodes a reply exactly as a request over a socket does, read in one go or
-/// a byte at a time, so what the fuzzer finds there is what a print server can reach.
+/// a byte at a time, ending at `Content-Length` or the last chunk without waiting for the server to
+/// close, so what the fuzzer finds there is what a print server can reach.
 #[test]
 fn the_fuzz_entry_point_decodes_replies_like_a_request_does() {
     let two = ipp(
@@ -664,6 +669,10 @@ fn the_fuzz_entry_point_decodes_replies_like_a_request_does() {
             assert_eq!(list.iter().map(|p| (p.name.as_str(), p.state, p.accepting_jobs)).collect::<Vec<_>>(), [("Office", 4, true), ("Stopped", 3, false)]);
         }
     }
+    // Bytes past `Content-Length` are not part of the reply.
+    let mut padded = http_bytes(&two, false, 200);
+    padded.extend_from_slice(b"\x01\x02junk");
+    assert_eq!(fuzz_reply(&mut Trickle(&padded, 4)).unwrap().0, Reply::parse(&two).unwrap());
     // The same refusals as over a socket: an HTTP error, an IPP error status, a broken chunk.
     assert!(matches!(fuzz_reply(&mut Trickle(&http_bytes(&two, false, 500), 3)), Err(Error::Protocol(m)) if m == "HTTP 500"));
     let refused = ipp(0x0406, &[ok_header()]);
