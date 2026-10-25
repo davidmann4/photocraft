@@ -274,8 +274,17 @@ fn parse_with(bytes: &[u8], fonts: fn() -> Arc<usvg::fontdb::Database>) -> Resul
     // re-checks the gzip magic and would decompress a second time without our size limit if
     // the inflated content happened to start with a nested gzip stream.
     let text = std::str::from_utf8(&xml).map_err(|_| IoError::Svg("the SVG is not valid UTF-8".into()))?;
-    let tree = usvg::Tree::from_str(text, &opt).map_err(|e| IoError::Svg(e.to_string()))?;
+    let tree = guarded(|| usvg::Tree::from_str(text, &opt))
+        .ok_or_else(|| IoError::Svg("the SVG parser failed on this drawing".into()))?
+        .map_err(|e| IoError::Svg(e.to_string()))?;
     Ok(Parsed { tree, fontless_text })
+}
+
+/// `f` under `catch_unwind`, `None` when it panics: usvg, resvg and tiny-skia panic on some
+/// malformed drawings, which must fail like any unreadable file, not crash (as the HEIF and
+/// JPEG XL decoders are guarded). Where a panic aborts (wasm) this changes nothing.
+fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
 }
 
 /// The plain XML of `bytes`: itself, or the inflated content of a gzip `.svgz`, refused past
@@ -400,8 +409,11 @@ fn import_parsed_with_budget(name: &str, parsed: Parsed, max_group_depth: usize,
         conv.warnings.push(format!("SVG: more than {MAX_NODES} elements; opened as one pixel layer instead of shapes"));
         let (w, h) = (cv.size.width, cv.size.height);
         if let Some(mut pixmap) = pixmap(w, h) {
-            resvg::render(&tree, global, &mut pixmap.as_mut());
-            doc.layers.push(Layer::new("Background", LayerContent::Raster(surface(&pixmap, doc.bounds(), fmt))));
+            if guarded(|| resvg::render(&tree, global, &mut pixmap.as_mut())).is_some() {
+                doc.layers.push(Layer::new("Background", LayerContent::Raster(surface(&pixmap, doc.bounds(), fmt))));
+            } else {
+                conv.warnings.push("SVG: the drawing could not be rendered".to_string());
+            }
         }
     } else {
         doc.layers = conv.convert_children(tree.root().children(), 0, 0, tree.root().abs_transform());
@@ -421,7 +433,8 @@ pub fn rasterize(bytes: &[u8], scale: f32) -> Result<photocraft_compose::Buffer,
     let side = |v: f32| ((v * k).ceil() as u32).max(1);
     let (w, h) = (side(tree.size().width()), side(tree.size().height()));
     let mut pixmap = pixmap(w, h).ok_or_else(|| IoError::Svg(format!("{w} × {h} px is too large to rasterise")))?;
-    resvg::render(&tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut());
+    guarded(|| resvg::render(&tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut()))
+        .ok_or_else(|| IoError::Svg("the drawing could not be rendered".into()))?;
     let rect = Rect::new(0, 0, w as i32, h as i32);
     let px = pixmap.pixels().iter().map(|p| rgba(p.demultiply())).collect();
     Ok(photocraft_compose::Buffer { rect, px })
@@ -798,7 +811,11 @@ impl Conv {
         // and shift so the pixmap starts at (x0, y0).
         let canvas = tiny_skia::Transform::from_row(k, 0.0, 0.0, k, -(x0 as f32), -(y0 as f32));
         let ts = canvas.pre_concat(parent).pre_translate(shift.x(), shift.y());
-        resvg::render_node(node, ts, &mut pixmap.as_mut())?;
+        let Some(rendered) = guarded(|| resvg::render_node(node, ts, &mut pixmap.as_mut())) else {
+            self.note("raster-panic", "SVG: an element that could not be rendered was dropped".to_string());
+            return None;
+        };
+        rendered?;
         let layer = Layer::new(name, LayerContent::Raster(surface(&pixmap, Rect::new(x0, y0, x1, y1), self.fmt)));
         let bytes = pixels * self.fmt.bytes_per_pixel() as u64;
         self.pixel_budget -= bytes;
