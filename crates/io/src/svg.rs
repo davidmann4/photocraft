@@ -105,6 +105,12 @@ const MAX_PEAK_PIXEL_BYTES: u64 = 3 << 29;
 const MAX_NODES: usize = 2_000;
 /// Nesting past which a subtree is rasterised instead of walked (bounded recursion).
 const MAX_RECURSION: usize = 200;
+/// Most filter work a drawing may ask of resvg, in pixel reads (see [`filter_cost`]): about ten
+/// seconds in a release build (resvg manages roughly 200 million reads a second, and its filters
+/// can't be interrupted).
+const MAX_FILTER_COST: u64 = 2_000_000_000;
+/// One `feTurbulence` octave per pixel, in pixel reads (it measures about 15 times a read).
+const TURBULENCE_OCTAVE_COST: u64 = 16;
 /// Deepest element nesting accepted. The XML parser recurses once per level, so a file nested
 /// a few thousand deep (70 KB of `<g>`) overflows a 2 MB thread stack, an abort no guard can
 /// catch; real drawings stay under a hundred levels.
@@ -390,6 +396,7 @@ fn import_parsed_with_budget(name: &str, parsed: Parsed, max_group_depth: usize,
         warnings.push("SVG: the text needs a font and none is installed, so it was dropped".to_string());
     }
     let cv = canvas(&tree, &mut warnings);
+    check_filter_cost(&tree, cv.scale)?;
     let mut doc = Document::new(name, cv.size, ColorMode::Rgb, SampleType::U8);
     let fmt = doc.pixel_format();
     let global = tiny_skia::Transform::from_scale(cv.scale, cv.scale);
@@ -418,6 +425,7 @@ pub fn rasterize(bytes: &[u8], scale: f32) -> Result<photocraft_compose::Buffer,
     let tree = parse(bytes)?.tree;
     let cv = canvas(&tree, &mut Vec::new());
     let k = cv.scale * scale.clamp(1.0 / 64.0, 64.0);
+    check_filter_cost(&tree, k)?;
     let side = |v: f32| ((v * k).ceil() as u32).max(1);
     let (w, h) = (side(tree.size().width()), side(tree.size().height()));
     let mut pixmap = pixmap(w, h).ok_or_else(|| IoError::Svg(format!("{w} × {h} px is too large to rasterise")))?;
@@ -470,6 +478,54 @@ fn count_nodes(root: &usvg::Group) -> usize {
         }
     }
     n
+}
+
+/// The work resvg's filters would do to render the drawing at `scale` canvas px per unit, in
+/// pixel reads: its morphology reads the whole radius window per pixel, convolution the whole
+/// kernel, and turbulence runs every octave (usvg doesn't clamp `numOctaves`). Masks, clip paths,
+/// patterns and embedded drawings count too.
+fn filter_cost(root: &usvg::Group, scale: f32, rec: usize) -> u64 {
+    use usvg::filter::Kind;
+    let mut cost = 0u64;
+    let mut stack: Vec<&usvg::Group> = vec![root];
+    while let Some(g) = stack.pop() {
+        let ts = tiny_skia::Transform::from_scale(scale, scale).pre_concat(g.abs_transform());
+        let (sx, sy) = ts.get_scale();
+        for f in g.filters() {
+            let Some(r) = f.rect().transform(ts) else { continue };
+            // Float-to-int casts saturate, so a huge region counts as huge.
+            let (w, h) = (r.width().ceil() as u64, r.height().ceil() as u64);
+            let window = |radius: f32, s: f32, side: u64| ((radius * s).ceil() as u64).saturating_mul(2).min(side);
+            for p in f.primitives() {
+                let reads = match p.kind() {
+                    Kind::ConvolveMatrix(c) => u64::from(c.matrix().columns()) * u64::from(c.matrix().rows()),
+                    Kind::Morphology(m) => window(m.radius_x().get(), sx, w).saturating_mul(window(m.radius_y().get(), sy, h)),
+                    Kind::Turbulence(t) => u64::from(t.num_octaves()).saturating_mul(TURBULENCE_OCTAVE_COST),
+                    _ => 1,
+                };
+                cost = cost.saturating_add(w.saturating_mul(h).saturating_mul(reads.max(1)));
+            }
+        }
+        for node in g.children() {
+            if let usvg::Node::Group(child) = node {
+                stack.push(child);
+            }
+            if rec < MAX_RECURSION {
+                node.subroots(|sub| cost = cost.saturating_add(filter_cost(sub, scale, rec + 1)));
+            }
+        }
+    }
+    cost
+}
+
+/// An error when the drawing's filters are too costly to render at `scale` (see [`filter_cost`]).
+fn check_filter_cost(tree: &usvg::Tree, scale: f32) -> Result<(), IoError> {
+    if filter_cost(tree.root(), scale, 0) > MAX_FILTER_COST {
+        return Err(IoError::Svg(
+            "the drawing's filters are too costly to render (a huge morphology radius, convolution kernel or turbulence octave count)".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Converts a parsed tree into layers.

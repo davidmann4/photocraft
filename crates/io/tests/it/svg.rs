@@ -413,6 +413,39 @@ fn rasterize_renders_the_whole_drawing_at_a_scale() {
     assert!(svg::rasterize(huge.as_bytes(), 64.0).is_err(), "a render past the pixel cap is an error, not an allocation");
 }
 
+/// resvg's morphology, convolution and turbulence cost pixels × radius², × order² and × octaves:
+/// such a drawing is refused up front instead of rendering for minutes.
+#[test]
+fn filters_too_costly_to_render_are_refused_not_run() {
+    let drawing = |side: u32, fe: &str| {
+        format!(
+            "<svg {NS} width=\"{side}\" height=\"{side}\"><filter id=\"f\">{fe}</filter><rect width=\"{side}\" height=\"{side}\" fill=\"red\" filter=\"url(#f)\"/></svg>"
+        )
+    };
+    let kernel = vec!["1"; 100 * 100].join(" ");
+    let in_mask = format!(
+        "<svg {NS} width=\"2000\" height=\"2000\"><filter id=\"f\"><feMorphology radius=\"1000\"/></filter><mask id=\"m\"><rect width=\"2000\" height=\"2000\" fill=\"white\" filter=\"url(#f)\"/></mask><rect width=\"2000\" height=\"2000\" mask=\"url(#m)\"/></svg>"
+    );
+    for svg in [
+        drawing(2000, "<feMorphology operator=\"dilate\" radius=\"1000\"/>"),
+        drawing(2000, &format!("<feConvolveMatrix order=\"100\" kernelMatrix=\"{kernel}\"/>")),
+        drawing(2000, "<feTurbulence baseFrequency=\"0.01\" numOctaves=\"1000000\"/>"),
+        in_mask,
+    ] {
+        let e = import("x.svg", svg.as_bytes()).err().unwrap_or_else(|| panic!("opened: {}", &svg[..200]));
+        assert!(matches!(&e, IoError::Svg(m) if m.contains("filter")), "{e}");
+        assert!(svg::rasterize(svg.as_bytes(), 1.0).is_err(), "rendered: {}", &svg[..200]);
+    }
+    // Ordinary filters still open and render.
+    let ordinary = drawing(500, "<feGaussianBlur stdDeviation=\"8\"/><feMorphology radius=\"3\"/><feTurbulence baseFrequency=\"0.05\" numOctaves=\"4\"/>");
+    assert!(!open(&ordinary).document.layers.is_empty());
+    assert!(svg::rasterize(ordinary.as_bytes(), 1.0).is_ok());
+    // The smart-object render counts its scale: cheap at 1×, refused at 40×.
+    let small = drawing(100, "<feMorphology radius=\"20\"/>");
+    assert!(svg::rasterize(small.as_bytes(), 1.0).is_ok());
+    assert!(svg::rasterize(small.as_bytes(), 40.0).is_err());
+}
+
 #[test]
 fn an_svg_round_trips_through_pcraft_as_shapes() {
     let r = open(&format!(
