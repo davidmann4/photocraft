@@ -455,6 +455,27 @@ fn filters_too_costly_to_render_are_refused_not_run() {
     assert!(svg::rasterize(small.as_bytes(), 40.0).is_err());
 }
 
+/// Patterns that fill and stroke with the next one double resvg's work at every level: past the
+/// check's element budget the drawing is refused, not walked (or rendered) for hours.
+#[test]
+fn patterns_nested_too_deep_are_refused_not_walked() {
+    let chain = |depth: usize| {
+        let defs: String = (0..depth)
+            .map(|i| {
+                let paint = if i + 1 < depth { format!("url(#p{})", i + 1) } else { "red".into() };
+                format!("<pattern id=\"p{i}\" width=\"4\" height=\"4\" patternUnits=\"userSpaceOnUse\"><rect width=\"4\" height=\"4\" fill=\"{paint}\" stroke=\"{paint}\"/></pattern>")
+            })
+            .collect();
+        format!("<svg {NS} width=\"8\" height=\"8\">{defs}<rect width=\"8\" height=\"8\" fill=\"url(#p0)\"/></svg>")
+    };
+    let deep = chain(24);
+    let e = import("x.svg", deep.as_bytes()).err().unwrap_or_else(|| panic!("opened a 2^24-use pattern chain"));
+    assert!(matches!(&e, IoError::Svg(m) if m.contains("too costly")), "{e}");
+    assert!(svg::rasterize(deep.as_bytes(), 1.0).is_err());
+    // A few levels still open.
+    assert!(!open(&chain(4)).document.layers.is_empty());
+}
+
 #[test]
 fn an_svg_round_trips_through_pcraft_as_shapes() {
     let r = open(&format!(

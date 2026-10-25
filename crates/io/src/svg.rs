@@ -112,6 +112,10 @@ const MAX_FILTER_COST: u64 = 2_000_000_000;
 /// Reads per pixel any primitive may take for free (a 16 × 16 morphology window or kernel, 16
 /// turbulence octaves), so ordinary filters open on any canvas.
 const ORDINARY_FILTER_READS: u64 = 256;
+/// Most elements [`filter_cost`] visits, counting a shared mask, clip path or pattern once per
+/// use, as resvg renders it: patterns that fill and stroke with the next one double the work at
+/// each level, so a few dozen levels would keep the check (and the render) busy for hours.
+const MAX_FILTER_VISITS: usize = 10_000_000;
 /// One `feTurbulence` octave per pixel, in pixel reads (it measures about 15 times a read).
 const TURBULENCE_OCTAVE_COST: u64 = 16;
 /// Deepest element nesting accepted. The XML parser recurses once per level, so a file nested
@@ -487,8 +491,9 @@ fn count_nodes(root: &usvg::Group) -> usize {
 /// the drawing through `base` (drawing units to canvas px), in pixel reads: its morphology reads
 /// the whole radius window per pixel, convolution the whole kernel, and turbulence runs every
 /// octave (usvg doesn't clamp `numOctaves`). Masks, clip paths, patterns and embedded drawings
-/// count too, at the scale of the element that uses them, as resvg renders them.
-fn filter_cost(root: &usvg::Group, base: tiny_skia::Transform, rec: usize) -> u64 {
+/// count too, at the scale of the element that uses them, as resvg renders them. Past `visits`
+/// elements the drawing counts as too costly.
+fn filter_cost(root: &usvg::Group, base: tiny_skia::Transform, rec: usize, visits: &mut usize) -> u64 {
     use usvg::filter::Kind;
     let mut cost = 0u64;
     let mut stack: Vec<&usvg::Group> = vec![root];
@@ -511,6 +516,10 @@ fn filter_cost(root: &usvg::Group, base: tiny_skia::Transform, rec: usize) -> u6
             }
         }
         for node in g.children() {
+            *visits = visits.saturating_sub(1);
+            if *visits == 0 {
+                return u64::MAX;
+            }
             if let usvg::Node::Group(child) = node {
                 stack.push(child);
             }
@@ -518,7 +527,7 @@ fn filter_cost(root: &usvg::Group, base: tiny_skia::Transform, rec: usize) -> u6
                 continue;
             }
             let world = base.pre_concat(node.abs_transform());
-            let mut sub = |root: &usvg::Group, ts: tiny_skia::Transform| cost = cost.saturating_add(filter_cost(root, ts, rec + 1));
+            let mut sub = |root: &usvg::Group, ts: tiny_skia::Transform| cost = cost.saturating_add(filter_cost(root, ts, rec + 1, visits));
             match node {
                 // resvg draws a pattern's tile at the path's scale times the pattern's own.
                 usvg::Node::Path(p) => {
@@ -537,9 +546,9 @@ fn filter_cost(root: &usvg::Group, base: tiny_skia::Transform, rec: usize) -> u6
 
 /// An error when the drawing's filters are too costly to render at `scale` (see [`filter_cost`]).
 fn check_filter_cost(tree: &usvg::Tree, scale: f32) -> Result<(), IoError> {
-    if filter_cost(tree.root(), tiny_skia::Transform::from_scale(scale, scale), 0) > MAX_FILTER_COST {
+    if filter_cost(tree.root(), tiny_skia::Transform::from_scale(scale, scale), 0, &mut { MAX_FILTER_VISITS }) > MAX_FILTER_COST {
         return Err(IoError::Svg(
-            "the drawing's filters are too costly to render (a huge morphology radius, convolution kernel or turbulence octave count)".into(),
+            "the drawing's filters are too costly to render (a huge morphology radius, convolution kernel or turbulence octave count, or patterns nested too deep)".into(),
         ));
     }
     Ok(())
@@ -1004,7 +1013,7 @@ mod tests {
             vec!["1"; 25].join(" ")
         );
         let tree = parse(svg.as_bytes()).unwrap().tree;
-        assert_eq!(filter_cost(tree.root(), tiny_skia::Transform::identity(), 0), 0);
+        assert_eq!(filter_cost(tree.root(), tiny_skia::Transform::identity(), 0, &mut { MAX_FILTER_VISITS }), 0);
         assert!(check_filter_cost(&tree, 1.0).is_ok());
     }
 
