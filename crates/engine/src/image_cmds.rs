@@ -216,23 +216,24 @@ fn image_size(s: &mut Session, p: &Value) -> Result<Value> {
     // The document range File › New and the dialog's field allow; outside it, refuse rather than
     // clamp (#9260: 1e39 became inf as f32, then silently 10000 ppi). The document's own
     // resolution always passes: an imported file may have one outside the range, and the dialog
-    // sends it back unchanged.
+    // sends it back unchanged (exactly: a value that only rounds to it as f32 is refused).
+    let own_dpi = f64::from(d.doc.resolution_dpi);
     let dpi = match p.get("resolution") {
         None | Some(Value::Null) => None,
         Some(v) => {
-            let own = |r: f64| r as f32 == d.doc.resolution_dpi;
-            let r = v.as_f64().filter(|&r| r.is_finite() && ((1.0..=MAX_RESOLUTION).contains(&r) || own(r)));
+            let r = v.as_f64().filter(|&r| r.is_finite() && ((1.0..=MAX_RESOLUTION).contains(&r) || r == own_dpi));
             Some(r.ok_or_else(|| bad("image.imageSize", format!("`resolution` = {v} must be a number of pixels per inch from 1 to {MAX_RESOLUTION}")))?)
         }
     };
     // `keepPrintSize`: only the resolution given, the pixels follow it (Photoshop's Image Size
-    // with Resample on, as an action records it).
+    // with Resample on, as an action records it). An unchanged resolution keeps the pixels.
     if p.get("keepPrintSize").and_then(Value::as_bool) == Some(true)
         && pw.is_none()
         && ph.is_none()
         && let Some(r) = dpi
+        && r != own_dpi
     {
-        let old = f64::from(d.doc.resolution_dpi).max(1.0);
+        let old = own_dpi.max(1.0);
         pw = Some(ow as f64 * r / old);
         ph = Some(oh as f64 * r / old);
     }
@@ -1313,6 +1314,13 @@ mod tests {
             s.execute("image.imageSize", json!({"width": 80, "height": 40, "resolution": f64::from(own), "resample": "bicubic"})).unwrap();
             assert_eq!((doc(&s).size, doc(&s).resolution_dpi), (Size::new(80, 40), own), "{own}");
             assert!(s.execute("image.imageSize", json!({"resolution": 0.03, "resample": "none"})).is_err(), "{own}: another value is still checked");
+            // Only the exact value: one that merely rounds to it as f32 is refused.
+            let near = if own < 1.0 { f64::from(own) * (1.0 + 1e-9) } else { f64::from(own) + 0.001 };
+            assert_eq!(near as f32, own);
+            assert!(s.execute("image.imageSize", json!({"resolution": near, "resample": "none"})).is_err(), "{own}: {near}");
+            // keepPrintSize with the unchanged resolution keeps the pixels.
+            s.execute("image.imageSize", json!({"resolution": f64::from(own), "resample": "bicubic", "keepPrintSize": true})).unwrap();
+            assert_eq!((doc(&s).size, doc(&s).resolution_dpi), (Size::new(80, 40), own), "{own}: keepPrintSize");
         }
     }
 
