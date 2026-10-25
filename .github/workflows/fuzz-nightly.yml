@@ -1,0 +1,115 @@
+name: Fuzz (nightly)
+
+# Every fuzz target (cargo-fuzz / libFuzzer) for a few minutes each night and on demand, so a
+# parser regression is caught within a day instead of waiting for someone to start a run by
+# hand. It never runs on pull requests, so it can't block one. Each target keeps its corpus in
+# the Actions cache between runs, so coverage grows night by night instead of starting over.
+#
+# A crash fails that target's leg. The crashing input is uploaded as a short-lived artifact:
+# reproduce it with `cargo fuzz run <target> <file>` in the crate, minimise it with
+# `cargo fuzz tmin`, and report it as SECURITY.md describes (never attach it to a public issue).
+
+on:
+  schedule:
+    - cron: "11 1 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: "Seconds per fuzz target"
+        default: "600"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-nightly
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # No fuzz run may print a page (see ci.yml).
+  PHOTOCRAFT_NO_PRINT: "1"
+  LPDEST: photocraft-no-such-printer
+
+jobs:
+  fuzz:
+    timeout-minutes: 60
+    name: fuzz (${{ matrix.target.crate }}/${{ matrix.target.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { crate: psd, name: parse }
+          - { crate: psd, name: descriptor }
+          - { crate: psd, name: image_source_data }
+          - { crate: psd, name: grd }
+          - { crate: psd, name: ase }
+          - { crate: psd, name: aco }
+          - { crate: psd, name: patterns }
+          - { crate: psd, name: filter_effects }
+          - { crate: psd, name: metadata }
+          - { crate: psd, name: tagged }
+          - { crate: psd, name: resources }
+          - { crate: psd, name: asl }
+          - { crate: codecs, name: decode_any }
+          - { crate: codecs, name: decode_png }
+          - { crate: codecs, name: decode_jpeg }
+          - { crate: codecs, name: decode_tiff }
+          - { crate: codecs, name: decode_exr }
+          - { crate: codecs, name: decode_heif }
+          - { crate: affinity, name: preview }
+          - { crate: affinity, name: import_preview, args: "--features io" }
+          - { crate: format, name: load }
+          - { crate: psd, name: abr }
+          - { crate: psd, name: atn }
+          - { crate: codecs, name: decode_gif }
+          - { crate: codecs, name: decode_webp }
+          - { crate: raw, name: develop }
+          - { crate: raw, name: ljpeg }
+          - { crate: affinity, name: stream }
+          - { crate: cms, name: icc_profile }
+          - { crate: cms, name: lut_file }
+          - { crate: io, name: import_xcf }
+          - { crate: io, name: import_pdn }
+          - { crate: io, name: import_kra }
+          - { crate: io, name: import_ora }
+          - { crate: io, name: import_svg }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: crates/${{ matrix.target.crate }}/fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Restore corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: crates/${{ matrix.target.crate }}/fuzz/corpus/${{ matrix.target.name }}
+          key: fuzz-corpus-${{ matrix.target.crate }}-${{ matrix.target.name }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target.crate }}-${{ matrix.target.name }}-
+      - name: Fuzz
+        working-directory: crates/${{ matrix.target.crate }}
+        env:
+          FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '300' }}
+        run: cargo fuzz run ${{ matrix.target.name }} ${{ matrix.target.args }} -- -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=4096 -timeout=30
+      - name: Minimise corpus
+        if: success()
+        working-directory: crates/${{ matrix.target.crate }}
+        run: cargo fuzz cmin ${{ matrix.target.name }} ${{ matrix.target.args }}
+      - name: Save corpus
+        if: success()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: crates/${{ matrix.target.crate }}/fuzz/corpus/${{ matrix.target.name }}
+          key: fuzz-corpus-${{ matrix.target.crate }}-${{ matrix.target.name }}-${{ github.run_id }}
+      - name: Upload crash input
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-${{ matrix.target.crate }}-${{ matrix.target.name }}
+          path: crates/${{ matrix.target.crate }}/fuzz/artifacts
+          retention-days: 3
