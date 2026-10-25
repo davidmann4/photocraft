@@ -492,7 +492,8 @@ fn count_nodes(root: &usvg::Group) -> usize {
 /// the whole radius window per pixel, convolution the whole kernel, and turbulence runs every
 /// octave (usvg doesn't clamp `numOctaves`). Masks, clip paths, patterns and embedded drawings
 /// count too, at the scale of the element that uses them, as resvg renders them. Past `visits`
-/// elements the drawing counts as too costly.
+/// elements, or with a referenced root nested past [`MAX_RECURSION`], the drawing counts as too
+/// costly.
 fn filter_cost(root: &usvg::Group, base: tiny_skia::Transform, rec: usize, visits: &mut usize) -> u64 {
     use usvg::filter::Kind;
     let mut cost = 0u64;
@@ -524,6 +525,21 @@ fn filter_cost(root: &usvg::Group, base: tiny_skia::Transform, rec: usize, visit
                 stack.push(child);
             }
             if rec >= MAX_RECURSION {
+                // usvg keeps referenced roots past this depth and resvg draws them: one the check
+                // would skip makes the drawing too costly. Ordinary children still count.
+                let mut skipped = false;
+                match node {
+                    usvg::Node::Path(p) => {
+                        skipped = [p.fill().map(|f| f.paint()), p.stroke().map(|s| s.paint())]
+                            .into_iter()
+                            .flatten()
+                            .any(|paint| matches!(paint, usvg::Paint::Pattern(_)))
+                    }
+                    _ => node.subroots(|_| skipped = true),
+                }
+                if skipped {
+                    return u64::MAX;
+                }
                 continue;
             }
             let world = base.pre_concat(node.abs_transform());

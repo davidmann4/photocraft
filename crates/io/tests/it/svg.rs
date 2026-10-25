@@ -476,6 +476,37 @@ fn patterns_nested_too_deep_are_refused_not_walked() {
     assert!(!open(&chain(4)).document.layers.is_empty());
 }
 
+/// usvg keeps a chain of single-use patterns past the check's recursion cutoff and resvg draws
+/// every one of them: a costly filter at the end of the chain is refused, not rendered unseen.
+#[test]
+fn a_costly_filter_past_the_pattern_recursion_cutoff_is_refused() {
+    let chain = |depth: usize, fe: &str| {
+        let defs: String = (0..depth)
+            .map(|i| {
+                let body = if i + 1 < depth {
+                    format!("<rect width=\"500\" height=\"500\" fill=\"url(#p{})\"/>", i + 1)
+                } else {
+                    "<rect width=\"500\" height=\"500\" fill=\"red\" filter=\"url(#f)\"/>".into()
+                };
+                format!("<pattern id=\"p{i}\" width=\"500\" height=\"500\" patternUnits=\"userSpaceOnUse\">{body}</pattern>")
+            })
+            .collect();
+        format!("<svg {NS} width=\"500\" height=\"500\"><filter id=\"f\">{fe}</filter>{defs}<rect width=\"500\" height=\"500\" fill=\"url(#p0)\"/></svg>")
+    };
+    // Just over the budget (about 3.5 billion reads), so a regression fails in seconds, not hours.
+    let fe = "<feMorphology operator=\"dilate\" radius=\"50\"/>";
+    assert!(import("x.svg", chain(4, fe).as_bytes()).is_err(), "the filter alone is over the budget");
+    let deep = chain(210, fe);
+    let e = import("x.svg", deep.as_bytes()).err().unwrap_or_else(|| panic!("opened a costly filter 210 patterns deep"));
+    assert!(matches!(&e, IoError::Svg(m) if m.contains("too costly")), "{e}");
+    assert!(svg::rasterize(deep.as_bytes(), 1.0).is_err());
+    // A short chain with an ordinary filter still opens, and so do groups nested past the cutoff.
+    assert!(!open(&chain(4, "<feGaussianBlur stdDeviation=\"2\"/>")).document.layers.is_empty());
+    let groups =
+        format!("<svg {NS} width=\"10\" height=\"10\">{}<rect width=\"10\" height=\"10\"/>{}</svg>", "<g opacity=\"0.99\">".repeat(250), "</g>".repeat(250));
+    assert!(!open(&groups).document.layers.is_empty());
+}
+
 #[test]
 fn an_svg_round_trips_through_pcraft_as_shapes() {
     let r = open(&format!(
