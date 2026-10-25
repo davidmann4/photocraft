@@ -842,8 +842,14 @@ fn trim(s: &mut Session, p: &Value) -> Result<Value> {
         "bottomRight" => buf.px.last().copied(),
         _ => None,
     };
+    // Transparency is judged on the image as stored at its depth: alpha under half a step rounds to 0.
+    let half_step = match d.doc.depth {
+        SampleType::U8 => Some(0.5 / 255.0),
+        SampleType::U16 => Some(0.5 / 65535.0),
+        SampleType::F32 => None,
+    };
     let differs = |q: [f32; 4]| match reference {
-        None => q[3] > 0.0,
+        None => half_step.map_or(q[3] > 0.0, |h| q[3] >= h),
         Some(r) => (0..4).any(|c| (q[c] * q[3] - r[c] * r[3]).abs() > 0.5 / 255.0 || (c == 3 && (q[3] - r[3]).abs() > 0.5 / 255.0)),
     };
     let mut b = Rect::EMPTY;
@@ -1896,6 +1902,28 @@ mod tests {
         .unwrap();
         s.execute("image.trim", json!({"basedOn": "topLeft"})).unwrap();
         assert_eq!(doc(&s).size, Size::new(10, 10));
+    }
+
+    #[test]
+    fn trim_transparent_drops_alpha_that_rounds_to_zero_at_the_depth() {
+        // A faint pixel at (0, 0) on a 40 % layer: alpha 1 step × 0.4 rounds to 0 at 8 and 16 bits
+        // (the stored image is transparent there), so Trim keeps only the opaque square. A 1/255
+        // pixel is 0.4 × 257 ≈ 103 steps at 16 bits and any alpha is content at 32 bits: kept.
+        for (depth, faint, keeps) in [(8, 1.0 / 255.0, false), (16, 1.0 / 65535.0, false), (16, 1.0 / 255.0, true), (32, 1.0 / 65535.0, true)] {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 100, "height": 100, "depth": depth, "background": "transparent"})).unwrap();
+            s.edit("paint", |doc, _| {
+                let surf = doc.layers[0].surface_mut().unwrap();
+                surf.fill_rect(Rect::new(40, 40, 50, 50), &[1.0, 0.0, 0.0, 1.0]);
+                surf.fill_rect(Rect::new(0, 0, 1, 1), &[1.0, 0.0, 0.0, faint]);
+                Ok(())
+            })
+            .unwrap();
+            s.execute("layer.setProps", json!({"layer": doc(&s).layers[0].id.0, "opacity": 0.4})).unwrap();
+            let r = s.execute("image.trim", json!({"basedOn": "transparent"})).unwrap();
+            let want = if keeps { json!({"x": 0, "y": 0, "width": 50, "height": 50}) } else { json!({"x": 40, "y": 40, "width": 10, "height": 10}) };
+            assert_eq!(r, want, "{depth}-bit, faint alpha {faint}");
+        }
     }
 
     #[test]
