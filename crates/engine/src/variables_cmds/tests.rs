@@ -433,10 +433,15 @@ fn export_data_sets_keeps_document_derived_names_inside_the_folder() {
     assert_eq!(r["files"], json!([format!("{dir}/.._esc_aped_001.png"), format!("{dir}/.._esc_aped_002.png")]));
     let r = s.execute("file.export.dataSetsAsFiles", json!({"dir": dir, "dataSets": ["nul"]})).unwrap();
     assert_eq!(r["files"], json!([format!("{dir}/nul_.png")]));
+    // `...` has the stem `..`: before a folder in the caller's template it would climb out too.
+    s.execute("image.duplicate", json!({"name": "..."})).unwrap();
+    let r = s.execute("file.export.dataSetsAsFiles", json!({"dir": dir, "dataSets": ["b"], "naming": "{document}/{name}"})).unwrap();
+    assert_eq!(r["files"], json!([format!("{dir}/_/b.png")]));
     let mut written: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     written.sort();
-    assert_eq!(written, [".._esc_aped_001.png", ".._esc_aped_002.png", "nul_.png"]);
+    assert_eq!(written, [".._esc_aped_001.png", ".._esc_aped_002.png", "_", "nul_.png"]);
     assert!(!std::path::Path::new(&format!("{root}/esc")).exists());
+    assert!(!std::path::Path::new(&format!("{root}/b.png")).exists());
     std::fs::remove_dir_all(root).unwrap();
 }
 

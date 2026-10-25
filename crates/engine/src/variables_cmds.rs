@@ -421,7 +421,8 @@ pub fn export_data_sets_with(s: &Session, p: &Value, mut write: impl FnMut(&str,
     }
     // Filename template: `{name}` (sanitised data-set name), `{index}` (1-based). Default `{name}`.
     let template = p.get("naming").and_then(Value::as_str).unwrap_or("{name}");
-    // A document name is not a path: a separator in it must not leave `dir`.
+    // A document name is not a path: a separator in it, or a stem of `.` / `..` before a `/` in
+    // the template, must not leave `dir`.
     let doc_stem: String = original
         .name
         .rsplit_once('.')
@@ -429,6 +430,7 @@ pub fn export_data_sets_with(s: &Session, p: &Value, mut write: impl FnMut(&str,
         .chars()
         .map(|c| if c.is_control() || "/\\<>:\"|?*".contains(c) { '_' } else { c })
         .collect();
+    let doc_stem = if matches!(doc_stem.as_str(), "." | "..") { "_".to_string() } else { doc_stem };
     // Plan the whole batch before writing: sanitised names or a constant template may collide.
     // Match the case-insensitive comparison used by the other batch exporters.
     let mut claimed = std::collections::HashMap::new();
