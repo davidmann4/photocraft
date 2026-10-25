@@ -4895,9 +4895,10 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         painter.set(layer_edges, egui::Shape::rect_stroke(xf.doc_rect(b), 0, Stroke::new(1.0, LAYER_EDGES), egui::StrokeKind::Outside));
     }
     // A tool drag held past the canvas edge scrolls the view toward the pointer (#4183); the
-    // drag's next move then extends into what scrolled in. The crop tools keep their own drags.
+    // drag's next move then extends into what scrolled in. The crop tools keep their own drags,
+    // pressed on this canvas (not a panel slider held while a stale crop drag lingers).
     if primary
-        && (app.drag.is_some() || crate::crop_ui::autoscrolls(app) || crate::perspective_crop_ui::dragging(app))
+        && (app.drag.is_some() || (pointer_here && (crate::crop_ui::autoscrolls(app) || crate::perspective_crop_ui::dragging(app))))
         && tool != Tool::Hand
         && !middle
         && let Some(p) = ui.input(|i| i.pointer.primary_down().then(|| i.pointer.latest_pos()).flatten())

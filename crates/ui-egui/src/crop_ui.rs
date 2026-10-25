@@ -1597,6 +1597,51 @@ mod tests {
         h.step();
     }
 
+    /// A press that started off the canvas (a panel slider beside it) doesn't scroll the view,
+    /// even with a crop drag still recorded: only a drag on the canvas auto-scrolls.
+    #[test]
+    fn a_press_beside_the_canvas_does_not_scroll_it_for_a_crop_drag() {
+        use egui::{Event, PointerButton, pos2};
+        let mut a = app(SampleType::U8);
+        a.ui.views = vec![crate::state::View {
+            zoom: 4.0,
+            center: [100.0, 50.0],
+            fit_pending: false,
+            fill_pending: false,
+            doc_size: [200, 100],
+            rotation: 0.0,
+            zoom_animating: false,
+            zoom_anchor: None,
+            display_camera: None,
+            zoom_transition: None,
+        }];
+        a.ui.crop_rect = Some([40.0, 10.0, 100.0, 40.0]);
+        a.crop.default_frame = false;
+        a.ui.extras.rulers = false;
+        // Left over from a drag a tool switch didn't end.
+        a.crop.drag = Some(CropDrag::Resize { hx: 1, hy: 0, start: [100.0, 25.0], rect: [40.0, 10.0, 100.0, 40.0], view: None });
+        // The canvas takes the left 400 points; the rest stands in for a panel.
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 400.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                let v = app.ui.views[0].clone();
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0));
+                crate::canvas::canvas_view(app, ui, 0, rect, v, true);
+            },
+            a,
+        );
+        h.run_steps(2);
+        let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        let p = pos2(500.0, 100.0);
+        h.event(Event::PointerMoved(p));
+        h.event(button(p, true));
+        h.step();
+        h.event(Event::PointerMoved(pos2(550.0, 100.0)));
+        h.run_steps(10);
+        assert_eq!(h.state().ui.views[0].center, [100.0, 50.0], "the view stayed put");
+        h.event(button(pos2(550.0, 100.0), false));
+        h.step();
+    }
+
     /// #1918: a pending crop belongs to the document it was drawn on. File › New, opening a file
     /// or switching tabs cancels it; it never shows on, or crops, another document.
     /// A turned pending frame is dropped with its angle when another document becomes active, and
