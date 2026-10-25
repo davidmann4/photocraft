@@ -436,6 +436,7 @@ fn drawings_the_svg_renderer_panics_on_are_errors_not_crashes() {
     let r = open(&many);
     assert!(r.document.layers.is_empty());
     assert!(r.warnings.iter().any(|w| w.contains("could not be rendered")), "{:?}", r.warnings);
+    assert!(!r.warnings.iter().any(|w| w.contains("nothing to draw")), "not an empty drawing: {:?}", r.warnings);
 }
 
 #[test]

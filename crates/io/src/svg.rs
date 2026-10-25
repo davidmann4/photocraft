@@ -412,13 +412,13 @@ fn import_parsed_with_budget(name: &str, parsed: Parsed, max_group_depth: usize,
             if guarded(|| resvg::render(&tree, global, &mut pixmap.as_mut())).is_some() {
                 doc.layers.push(Layer::new("Background", LayerContent::Raster(surface(&pixmap, doc.bounds(), fmt))));
             } else {
-                conv.warnings.push("SVG: the drawing could not be rendered".to_string());
+                conv.note("raster-panic", "SVG: the drawing could not be rendered".to_string());
             }
         }
     } else {
         doc.layers = conv.convert_children(tree.root().children(), 0, 0, tree.root().abs_transform());
     }
-    if doc.layers.is_empty() {
+    if doc.layers.is_empty() && !conv.noted.contains(&"raster-panic") {
         conv.warnings.push("SVG: nothing to draw (an empty drawing)".to_string());
     }
     Ok(ImportResult { document: doc, warnings: conv.warnings, source_read_only: false, preview_only: false })
