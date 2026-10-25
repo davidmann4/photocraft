@@ -14,6 +14,13 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 photocraft-codecs = { path = "../../codecs" }
 photocraft-io = { path = ".." }
+photocraft-algo = { path = "../../algo" }
+photocraft-format = { path = "../../format" }
+
+# The seed generator (examples/seeds.rs) builds documents in code.
+[dev-dependencies]
+photocraft-doc = { path = "../../doc" }
+photocraft-raster = { path = "../../raster" }
 
 [[bin]]
 name = "import_xcf"
@@ -46,6 +53,20 @@ bench = false
 [[bin]]
 name = "import_svg"
 path = "fuzz_targets/import_svg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "camera_raw_xmp"
+path = "fuzz_targets/camera_raw_xmp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "export_roundtrip"
+path = "fuzz_targets/export_roundtrip.rs"
 test = false
 doc = false
 bench = false
