@@ -661,7 +661,9 @@ fn the_fuzz_entry_point_decodes_replies_like_a_request_does() {
     );
     for chunked in [false, true] {
         let (ep, _rx) = fake(two.clone(), chunked, 200);
-        let over_socket = printers(&ep).unwrap();
+        // The one request the fake answers: `printers` would go on to ask for classes and the
+        // default, and those can reach the listener before it closes and wait out the timeout.
+        let over_socket = queues(&ep, OP_CUPS_GET_PRINTERS, false).unwrap();
         for step in [1, 5, 16 * 1024] {
             let (reply, list) = fuzz_reply(&mut Trickle(&http_bytes(&two, chunked, 200), step)).unwrap();
             assert_eq!(reply, Reply::parse(&two).unwrap(), "chunked {chunked}, step {step}");
