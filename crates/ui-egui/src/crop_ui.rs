@@ -760,7 +760,7 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
 /// Pointer input for the Crop tool. Returns true when the event was its.
 pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool {
     if app.ui.tool != Tool::Crop {
-        app.crop.drag = None;
+        end_drag(app);
         return false;
     }
     let p = match ev {
@@ -828,32 +828,50 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
         ToolEvent::Move { .. } => update(app, p, mods),
         ToolEvent::Up { .. } => {
             update(app, p, mods);
-            let Some(drag) = app.crop.drag.take() else { return true };
-            let ok = app.ui.crop_rect.is_some_and(size_ok);
-            // A click outside the untouched default frame (no turn) leaves it the default.
-            let changed = !matches!(drag, CropDrag::Rotate { from, .. } | CropDrag::TurnImage { from, .. } if from == angle(app))
-                && !matches!(drag, CropDrag::MoveImage { rect, .. } if app.ui.crop_rect == Some(rect));
-            if ok && changed {
-                app.crop.default_frame = false;
-            }
-            match drag {
-                CropDrag::Draw { prev, .. } if !ok => app.ui.crop_rect = prev,
-                CropDrag::Move { rect, .. } | CropDrag::Resize { rect, view: None, .. } if !ok => app.ui.crop_rect = Some(rect),
-                // A live-centred resize collapsed: the frame and the view it moved go back.
-                CropDrag::Resize { rect, view: Some(view), .. } if !ok => crate::crop_mode::offset_image(app, rect, Some(view), [0.0, 0.0]),
-                // Auto Center Preview: a box drawn in default mode moves to the middle. (A resized
-                // one stays where its centre was: `crop_mode::live_resize`.)
-                CropDrag::Draw { .. } if ok => {
-                    crate::crop_mode::sync_frame(app);
-                    crate::crop_mode::auto_center(app);
-                }
-                _ => {}
-            }
-            push_press_step(app);
+            release(app);
         }
     }
     crate::crop_mode::sync_frame(app);
     true
+}
+
+/// Another tool was picked while a drag on the frame is held (a tool key, #9223): the gesture ends
+/// where the pointer last moved it, as a release there would, so a box drawn over the untouched
+/// default frame counts as drawn and leaving the tool commits it.
+pub fn end_drag(app: &mut PhotocraftApp) {
+    if app.crop.drag.is_none() {
+        return;
+    }
+    let tool = std::mem::replace(&mut app.ui.tool, Tool::Crop);
+    release(app);
+    crate::crop_mode::sync_frame(app);
+    app.ui.tool = tool;
+}
+
+/// The release of a drag on the frame, the pointer's last move already applied.
+fn release(app: &mut PhotocraftApp) {
+    let Some(drag) = app.crop.drag.take() else { return };
+    let ok = app.ui.crop_rect.is_some_and(size_ok);
+    // A click outside the untouched default frame (no turn) leaves it the default.
+    let changed = !matches!(drag, CropDrag::Rotate { from, .. } | CropDrag::TurnImage { from, .. } if from == angle(app))
+        && !matches!(drag, CropDrag::MoveImage { rect, .. } if app.ui.crop_rect == Some(rect));
+    if ok && changed {
+        app.crop.default_frame = false;
+    }
+    match drag {
+        CropDrag::Draw { prev, .. } if !ok => app.ui.crop_rect = prev,
+        CropDrag::Move { rect, .. } | CropDrag::Resize { rect, view: None, .. } if !ok => app.ui.crop_rect = Some(rect),
+        // A live-centred resize collapsed: the frame and the view it moved go back.
+        CropDrag::Resize { rect, view: Some(view), .. } if !ok => crate::crop_mode::offset_image(app, rect, Some(view), [0.0, 0.0]),
+        // Auto Center Preview: a box drawn in default mode moves to the middle. (A resized
+        // one stays where its centre was: `crop_mode::live_resize`.)
+        CropDrag::Draw { .. } if ok => {
+            crate::crop_mode::sync_frame(app);
+            crate::crop_mode::auto_center(app);
+        }
+        _ => {}
+    }
+    push_press_step(app);
 }
 
 /// On release: the frame state at the press becomes a box Undo step when the gesture changed it.
@@ -1873,6 +1891,35 @@ mod tests {
             ensure_frame(&mut app);
             assert_eq!(app.ui.crop_rect, None, "{tool:?}");
             assert_eq!(app.session.active().unwrap().doc.size, Size::new(100, 60), "{tool:?}");
+        }
+    }
+
+    /// The same mid-drag tool switch on the untouched default frame: a box drawn over it, or the
+    /// frame resized by a handle, is an edit and commits on leave; a box too small to keep goes back
+    /// to the default frame, which leaving drops (#9223).
+    #[test]
+    fn a_tool_switch_during_a_drag_on_the_default_frame_keeps_the_edit() {
+        let cases: [(&[[f64; 2]], Size); 3] = [
+            (&[[20.0, 20.0], [120.0, 80.0]], Size::new(100, 60)),
+            (&[[200.0, 100.0], [150.0, 80.0]], Size::new(150, 80)),
+            (&[[20.0, 20.0], [20.0, 20.0]], Size::new(200, 100)),
+        ];
+        for (path, size) in cases {
+            for tool in [Tool::PerspectiveCrop, Tool::Brush] {
+                let mut app = app(SampleType::U8);
+                ensure_frame(&mut app);
+                assert!(app.crop.default_frame);
+                tool_event(&mut app, ToolEvent::Down { x: path[0][0], y: path[0][1], pressure: 1.0 }, NONE);
+                tool_event(&mut app, ToolEvent::Move { x: path[1][0], y: path[1][1], pressure: 1.0 }, NONE);
+                assert!(app.crop.drag.is_some());
+                app.ui.tool = tool;
+                tool_event(&mut app, ToolEvent::Move { x: 70.0, y: 50.0, pressure: 1.0 }, NONE);
+                tool_event(&mut app, ToolEvent::Up { x: 70.0, y: 50.0 }, NONE);
+                assert!(app.crop.drag.is_none(), "{tool:?} {path:?}");
+                ensure_frame(&mut app);
+                assert_eq!(app.ui.crop_rect, None, "{tool:?} {path:?}");
+                assert_eq!(app.session.active().unwrap().doc.size, size, "{tool:?} {path:?}");
+            }
         }
     }
 
