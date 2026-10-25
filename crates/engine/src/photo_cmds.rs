@@ -834,7 +834,12 @@ fn crop_and_straighten(s: &mut Session, _p: &Value) -> Result<Value> {
     let doc = st.doc.clone();
     let fmt = doc.pixel_format();
     let flat = flattened(&doc, fmt);
-    let area = doc.bounds();
+    let canvas = doc.bounds();
+    // Like Photoshop, only the selected area is searched when there is a selection.
+    let area = doc.selection.as_ref().map_or(canvas, |m| m.content_bounds().intersect(&canvas));
+    if area.is_empty() {
+        return Err(EngineError::Other("the selection is empty".into()));
+    }
     let (w, h) = (area.width() as usize, area.height() as usize);
     let mut rgba = vec![[0.0f32; 4]; w * h];
     flat.read_rgba_into(area, &mut rgba);
@@ -847,7 +852,10 @@ fn crop_and_straighten(s: &mut Session, _p: &Value) -> Result<Value> {
             }
         }
     }
-    let found = scancrop::find_photos(w, h, &rgba);
+    let mut found = scancrop::find_photos(w, h, &rgba);
+    for f in &mut found {
+        f.center = [f.center[0] + f64::from(area.x0), f.center[1] + f64::from(area.y0)];
+    }
     if found.is_empty() {
         return Err(EngineError::Other("no photos found on a uniform background".into()));
     }
@@ -857,7 +865,7 @@ fn crop_and_straighten(s: &mut Session, _p: &Value) -> Result<Value> {
         let corners = f.corners();
         let hq = Homography::rect_to_quad([0.0, 0.0, pw as f64, ph as f64], corners).and_then(|h| h.inverse());
         let Some(hm) = hq else { continue };
-        let warped = warp_surface(&flat, area, &hm, Interp::Bicubic)?;
+        let warped = warp_surface(&flat, canvas, &hm, Interp::Bicubic)?;
         let keep = Rect::new(0, 0, pw as i32, ph as i32);
         let mut px = Surface::new(fmt);
         px.write_region(keep, &warped.read_region(keep));
@@ -924,7 +932,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Crop and Straighten Photos",
             menu: &["File", "Automate"],
             shortcut: None,
-            params: "{} → one new document per photo found on the scan",
+            params: "{} → one new document per photo found on the scan (inside the selection when there is one)",
             enabled: not_indexed,
             run: crop_and_straighten,
             journal: true,
@@ -1171,6 +1179,38 @@ mod tests {
         assert!(!s.is_enabled("file.automate.cropAndStraightenPhotos"));
         assert!(s.execute("file.automate.cropAndStraightenPhotos", json!({})).is_err());
         assert_eq!(s.documents().len(), 1);
+    }
+
+    #[test]
+    fn crop_and_straighten_only_processes_the_selection() {
+        // Photoshop: with a selection, only the photos inside it are split off.
+        let (w, h) = (480usize, 340usize);
+        let mut px = vec![[0.98f32, 0.98, 0.98, 1.0]; w * h];
+        // Upright photos: red 160x110 at (40, 60), blue 150x120 at (290, 180).
+        for (x0, y0, pw, ph, c) in [(40, 60, 160, 110, [0.6f32, 0.1, 0.1, 1.0]), (290, 180, 150, 120, [0.1, 0.2, 0.6, 1.0])] {
+            for y in y0..y0 + ph {
+                px[y * w + x0..y * w + x0 + pw].fill(c);
+            }
+        }
+        let mut s = Session::new();
+        s.add_document(doc_from("scan", &px, w, h, SampleType::U8), None);
+        s.execute("select.rect", json!({"x": 270, "y": 160, "width": 190, "height": 160})).unwrap();
+        let r = s.execute("file.automate.cropAndStraightenPhotos", json!({})).unwrap();
+        let found = r["photos"].as_array().unwrap();
+        assert_eq!(found.len(), 1, "{r}");
+        assert_eq!(s.documents().len(), 2);
+        // The reported centre is in the scan's coordinates.
+        let c = &found[0]["center"];
+        assert!((c[0].as_f64().unwrap() - 365.0).abs() < 3.0 && (c[1].as_f64().unwrap() - 240.0).abs() < 3.0, "{c}");
+        let d = &s.documents()[1].doc;
+        assert!((d.size.width as i64 - 150).abs() <= 4 && (d.size.height as i64 - 120).abs() <= 4, "{:?}", d.size);
+        let q = d.layers[0].surface().unwrap().rgba(d.size.width as i32 / 2, d.size.height as i32 / 2);
+        assert!(q[2] > 0.5 && q[0] < 0.2, "{q:?}");
+        // Without a selection both photos are found.
+        s.set_active(0);
+        s.execute("select.deselect", json!({})).unwrap();
+        let r = s.execute("file.automate.cropAndStraightenPhotos", json!({})).unwrap();
+        assert_eq!(r["photos"].as_array().unwrap().len(), 2, "{r}");
     }
 
     #[test]
