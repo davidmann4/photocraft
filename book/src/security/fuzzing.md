@@ -1,6 +1,6 @@
 # Fuzzing and regression testing
 
-PhotoCraft already has `cargo-fuzz` workspaces next to its primary untrusted-format crates:
+PhotoCraft has `cargo-fuzz` workspaces next to its primary untrusted-format crates:
 
 | Crate | Targets |
 |---|---|
@@ -12,7 +12,7 @@ PhotoCraft already has `cargo-fuzz` workspaces next to its primary untrusted-for
 | `crates/io` | `import_xcf`, `import_pdn`, `import_kra`, `import_ora`, `import_svg` (through `photocraft_io::import`, the File › Open path) |
 | `crates/cms` | `icc_profile` (parse, then transforms to and from sRGB in every intent), `lut_file` (.cube, .3dl, .look) |
 
-The `Fuzz (nightly)` workflow (`.github/workflows/fuzz-nightly.yml`) runs every target for five minutes each night and on demand (with a chosen duration). Each target's corpus is kept in the Actions cache between runs and minimised with `cargo fuzz cmin`, so coverage builds up over nights. A crash fails that target's leg and uploads the input as an artifact kept for three days; report it as `SECURITY.md` describes. A new target must be added to that workflow's matrix.
+The `Fuzz (nightly)` workflow (`.github/workflows/fuzz-nightly.yml`) runs every target for five minutes each night, thirty minutes on Sundays, and on demand (with a chosen duration). Each target's corpus is kept in the Actions cache between runs and minimised with `cargo fuzz cmin`, so coverage builds up over nights. A crash fails that target's leg and uploads the input as an artifact kept for three days; report it as `SECURITY.md` describes. A new target must be added to that workflow's matrix.
 
 Run a target from its crate directory with nightly Rust and `cargo-fuzz` installed:
 
