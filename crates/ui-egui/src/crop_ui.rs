@@ -510,8 +510,8 @@ pub fn intercept(app: &mut PhotocraftApp, id: &str) -> Option<Result<serde_json:
 }
 
 /// A History jump waits for a drawn frame (#9285): it would resize the document under the frame,
-/// which keeps its coordinates. The Edit menu greys Step Forward/Backward ([`blocks`]); the History
-/// panel and the control channel come through `app.run`.
+/// which keeps its coordinates. Menus and shortcuts ask [`blocks`]; the History panel, its menu and
+/// the control channel come through `app.run`.
 pub fn holds_history(app: &PhotocraftApp, id: &str) -> bool {
     pending(app) && matches!(id, "history.selectState" | "history.selectSnapshot" | "history.stepBackward" | "history.stepForward" | "history.deleteState")
 }
@@ -1460,6 +1460,11 @@ mod tests {
         app.crop.default_frame = true;
         app.run("history.selectState", json!({"state": 0})).unwrap();
         assert_eq!(size(&app), Some((200, 100)));
+        // Step Forward has a state to redo now; a drawn frame holds it back too.
+        app.crop.default_frame = false;
+        assert!(app.run("history.stepForward", json!({})).is_err(), "history.stepForward waits for the crop");
+        assert_eq!(size(&app), Some((200, 100)));
+        app.crop.default_frame = true;
         app.run("history.stepForward", json!({})).unwrap();
         assert_eq!(size(&app), Some((300, 200)));
     }

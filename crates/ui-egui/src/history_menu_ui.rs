@@ -161,8 +161,9 @@ mod tests {
         app.ui.tool = crate::state::Tool::Crop;
         app.ui.crop_rect = Some([4.0, 4.0, 40.0, 30.0]);
         app.crop.default_frame = false;
+        app.session.execute("history.stepBackward", json!({})).unwrap();
         let mut h = harness(app);
-        for label in ["Step Backward", "Delete"] {
+        for label in ["Step Backward", "Step Forward", "Delete"] {
             assert!(is_disabled(&h, label), "{label}");
         }
         assert!(!is_disabled(&h, "New Snapshot…"), "a snapshot leaves the document as it is");
@@ -170,7 +171,7 @@ mod tests {
         h.run_steps(2);
         assert!(!is_disabled(&h, "Step Backward"), "the tool's own frame around the canvas holds nothing back");
         click(&mut h, "Step Backward");
-        assert_eq!(states(&h), (3, 1));
+        assert_eq!(states(&h), (2, 2));
     }
 
     #[test]
