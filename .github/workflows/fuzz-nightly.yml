@@ -6,9 +6,10 @@ name: Fuzz (nightly)
 # its corpus in the Actions cache between runs, so coverage grows night by night instead of
 # starting over.
 #
-# A crash fails that target's leg. The crashing input is uploaded as a short-lived artifact:
-# reproduce it with `cargo fuzz run <target> <file>` in the crate, minimise it with
-# `cargo fuzz tmin`, and report it as SECURITY.md describes (never attach it to a public issue).
+# A crash fails that target's leg. The crashing input is uploaded as an artifact kept for three
+# days: reproduce it with `cargo fuzz run <target> <file>` in the crate, minimise it with
+# `cargo fuzz tmin`, and report it as SECURITY.md describes. On a public repository the job log
+# (with libFuzzer's base64 of small inputs and the stack trace) and the artifact are public too.
 
 on:
   schedule:
@@ -42,6 +43,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Leaves runners free for pull-request CI while the run lasts.
+      max-parallel: 10
       matrix:
         target:
           - { crate: psd, name: parse }
@@ -84,9 +87,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          workspaces: crates/${{ matrix.target.crate }}/fuzz
+      # No rust-cache: the unpinned nightly changes the key every day, so each night would save
+      # several GB of sanitizer builds that the next night can't use, and push the gate's caches
+      # out of the repository's 10 GB.
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
       - name: Restore corpus
@@ -107,7 +110,7 @@ jobs:
       - name: Minimise corpus
         if: success()
         working-directory: crates/${{ matrix.target.crate }}
-        run: cargo fuzz cmin ${{ matrix.target.name }} ${{ matrix.target.args }}
+        run: cargo fuzz cmin ${{ matrix.target.name }} ${{ matrix.target.args }} -- -malloc_limit_mb=9216 -rss_limit_mb=12288 -timeout=30
       - name: Save corpus
         if: success()
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
