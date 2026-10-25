@@ -404,29 +404,34 @@ pub fn reveal_all_bounds(doc: &Document) -> Rect {
     doc.walk().into_iter().filter_map(|(_, _, l)| l.surface().map(|s| visible_bounds(s, canvas))).fold(canvas, |a, b| a.union(&b))
 }
 
-/// Bounds of `s`'s pixels with alpha > 0, as Photoshop's layer bounds (#9379): the Eraser only
-/// clears alpha, so an erased pixel keeps its colour bytes and `content_bounds` counts it. Tiles
-/// inside `canvas` can't grow the canvas and are skipped.
+/// Bounds of `s`'s pixels outside `canvas` with alpha > 0, as Photoshop's layer bounds (#9379):
+/// the Eraser only clears alpha, so an erased pixel keeps its colour bytes and `content_bounds`
+/// counts it. Pixels inside `canvas` can't grow the result and aren't read.
 fn visible_bounds(s: &photocraft_raster::Surface, canvas: Rect) -> Rect {
+    use rayon::prelude::*;
     let fmt = s.format();
     if !fmt.alpha || s.default_pixel().last().is_none_or(|a| *a > 0.0) {
         return s.content_bounds();
     }
-    let (n, side) = (fmt.channels(), photocraft_geom::TILE_SIZE as usize);
-    let mut out = Rect::EMPTY;
-    for (c, t) in s.tiles() {
-        let o = c.rect();
-        if canvas.contains_rect(&o) {
-            continue;
+    let (n, bpp, side) = (fmt.channels(), fmt.bytes_per_pixel(), photocraft_geom::TILE_SIZE);
+    let tiles: Vec<_> = s.tiles().filter(|(c, _)| !canvas.contains_rect(&c.rect())).collect();
+    let tile_bounds = |o: Rect, bytes: &[u8]| {
+        let mut out = Rect::EMPTY;
+        for (ly, row) in bytes.chunks_exact(bpp * side as usize).enumerate() {
+            let y = o.y0.saturating_add(ly as i32);
+            let on_canvas = (canvas.y0..canvas.y1).contains(&y);
+            let visible = |lx: &i32| {
+                let x = o.x0.saturating_add(*lx);
+                !(on_canvas && (canvas.x0..canvas.x1).contains(&x))
+                    && row.get(*lx as usize * bpp..).is_some_and(|px| photocraft_color::read_sample(px, fmt.sample, n - 1) > 0.0)
+            };
+            let Some(first) = (0..side).find(visible) else { continue };
+            let last = (first..side).rfind(visible).unwrap_or(first);
+            out = out.union(&Rect::new(o.x0.saturating_add(first), y, o.x0.saturating_add(last).saturating_add(1), y.saturating_add(1)));
         }
-        for (i, px) in t.bytes().chunks_exact(fmt.bytes_per_pixel()).enumerate() {
-            if photocraft_color::read_sample(px, fmt.sample, n - 1) > 0.0 {
-                let (x, y) = (o.x0 + (i % side) as i32, o.y0 + (i / side) as i32);
-                out = out.union(&Rect::new(x, y, x + 1, y + 1));
-            }
-        }
-    }
-    out
+        out
+    };
+    tiles.par_iter().map(|(c, t)| tile_bounds(c.rect(), t.bytes())).reduce(|| Rect::EMPTY, |a, b| a.union(&b))
 }
 
 // ---------- layers ----------
