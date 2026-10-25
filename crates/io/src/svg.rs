@@ -203,6 +203,64 @@ fn system_generic_family(_generic: &str) -> Option<String> {
     None
 }
 
+/// Most font file bytes [`in_memory`] keeps; past it a face stays on disk (slow, still right).
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_CACHED_FONT_BYTES: usize = 256 << 20;
+
+/// `id`, or the same face loaded from memory when the database names a file for it. fontdb
+/// re-reads a system font's whole file for every glyph usvg outlines (about a millisecond a
+/// character with Times New Roman), so a short entity-expanded text could keep an import busy
+/// for minutes. Each file is read once per process; the parse's own database copy then holds
+/// every face of that file from memory.
+#[cfg(not(target_arch = "wasm32"))]
+fn in_memory(id: usvg::fontdb::ID, db: &mut Arc<usvg::fontdb::Database>) -> usvg::fontdb::ID {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, PoisonError};
+    use usvg::fontdb::Source;
+    type Files = (HashMap<PathBuf, Arc<Vec<u8>>>, usize);
+    static FILES: OnceLock<Mutex<Files>> = OnceLock::new();
+    let Some((Source::File(path), index)) = db.face_source(id) else { return id };
+    let bytes = {
+        let mut files = FILES.get_or_init(Mutex::default).lock().unwrap_or_else(PoisonError::into_inner);
+        match files.0.get(&path) {
+            Some(b) => b.clone(),
+            None => {
+                let Ok(b) = std::fs::read(&path) else { return id };
+                if files.1.saturating_add(b.len()) > MAX_CACHED_FONT_BYTES {
+                    return id;
+                }
+                files.1 = files.1.saturating_add(b.len());
+                let b = Arc::new(b);
+                files.0.insert(path.clone(), b.clone());
+                b
+            }
+        }
+    };
+    let db = Arc::make_mut(db);
+    let same_file: Vec<_> = db.faces().filter(|f| matches!(&f.source, Source::File(p) if *p == path)).map(|f| f.id).collect();
+    for f in same_file {
+        db.remove_face(f);
+    }
+    let loaded = db.load_font_source(Source::Binary(bytes));
+    loaded.into_iter().find(|&n| db.face_source(n).is_some_and(|(_, i)| i == index)).unwrap_or(id)
+}
+
+/// usvg's font choice, with the chosen faces read from memory ([`in_memory`]).
+fn font_resolver() -> usvg::FontResolver<'static> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let select = usvg::FontResolver::default_font_selector();
+        let fallback = usvg::FontResolver::default_fallback_selector();
+        usvg::FontResolver {
+            select_font: Box::new(move |font, db| select(font, db).map(|id| in_memory(id, db))),
+            select_fallback: Box::new(move |c, used, db| fallback(c, used, db).map(|id| in_memory(id, db))),
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    usvg::FontResolver::default()
+}
+
 /// Parse options for an untrusted drawing. `<image href>` resolves only `data:` URLs: a file path
 /// or relative href is never read, so opening an SVG cannot pull local files (`/etc/...`,
 /// `~/.ssh/...`) into the document. Embedded SVG images get no `<image>` resolution at all
@@ -239,6 +297,7 @@ fn options(fontdb: Arc<usvg::fontdb::Database>) -> usvg::Options<'static> {
         resources_dir: None,
         image_href_resolver: usvg::ImageHrefResolver { resolve_data, resolve_string: Box::new(|_, _| None) },
         fontdb,
+        font_resolver: font_resolver(),
         ..usvg::Options::default()
     }
 }
@@ -1090,6 +1149,37 @@ mod tests {
             let r = import_parsed("t", parsed, MAX_GROUP_DEPTH).unwrap();
             assert_eq!(r.document.layers.first().map(|l| l.name.as_str()), Some("II"), "{family}: {:?}", r.warnings);
         }
+    }
+
+    /// #9406: a font installed on disk (how the system fonts load) is read once, not once per
+    /// glyph: fontdb re-reads a file source's whole font on every glyph it outlines, about a
+    /// millisecond a character. The face text is set in comes from memory, and the outlines
+    /// match the same font loaded from memory in the first place.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn text_in_a_font_on_disk_is_set_from_memory() {
+        fn inter_on_disk() -> Arc<usvg::fontdb::Database> {
+            let mut db = usvg::fontdb::Database::new();
+            let _ = db.load_font_file(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/Inter-Regular.ttf"));
+            Arc::new(db)
+        }
+        assert!(inter_on_disk().faces().all(|f| matches!(f.source, usvg::fontdb::Source::File(_))));
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"60\"><text x=\"5\" y=\"45\" font-size=\"48\" font-family=\"Inter\">IHI</text></svg>";
+        let parsed = parse_with(svg, inter_on_disk).unwrap();
+        let faces: Vec<_> = parsed.tree.fontdb().faces().map(|f| matches!(f.source, usvg::fontdb::Source::Binary(_))).collect();
+        assert_eq!(faces, [true], "the face text was set in is held in memory");
+        let on_disk = import_parsed("t", parsed, MAX_GROUP_DEPTH).unwrap();
+        let in_memory = import_parsed("t", parse_with(svg, inter_only).unwrap(), MAX_GROUP_DEPTH).unwrap();
+        assert_eq!(on_disk.document.layers.first().map(|l| l.name.as_str()), Some("IHI"));
+        let outlines = |r: &ImportResult| {
+            let groups = r.document.layers.iter().filter_map(|l| if let LayerContent::Group(g) = &l.content { Some(g) } else { None });
+            groups
+                .flat_map(|g| &g.children)
+                .filter_map(|l| if let LayerContent::Shape(s) = &l.content { Some(s.path.clone()) } else { None })
+                .collect::<Vec<_>>()
+        };
+        assert!(outlines(&on_disk).iter().any(|p| !p.subpaths.is_empty()), "the text has outlines");
+        assert_eq!(outlines(&on_disk), outlines(&in_memory));
     }
 
     #[test]
