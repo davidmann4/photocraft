@@ -499,9 +499,14 @@ pub fn read_with(
 fn unsmoothed_scroll(i: &InputState, options: &egui::InputOptions) -> Vec2 {
     let page = i.content_rect().height();
     i.events.iter().fold(Vec2::ZERO, |sum, e| {
-        let Event::MouseWheel { unit, delta, modifiers, .. } = e else {
+        let Event::MouseWheel { unit, delta, modifiers, phase, .. } = e else {
             return sum;
         };
+        // egui scrolls only by `Move` events; a trackpad's `Start`, `End` or `Cancel` delta
+        // (`WheelState::on_wheel_event`) is not a scroll.
+        if *phase != TouchPhase::Move {
+            return sum;
+        }
         // egui turns these into its own zoom, not a scroll.
         if modifiers.matches_any(options.zoom_modifier) {
             return sum;
@@ -661,6 +666,40 @@ mod tests {
         let smooth = pans(true);
         assert!(smooth[0].y.abs() < notch - 0.5, "smoothed, the first frame moves only part of it: {:?}", smooth[0]);
         assert!(smooth[1..].iter().any(|p| p.y != 0.0), "and the rest follows");
+    }
+
+    /// Unsmoothed, only `Move` wheel events pan, as egui scrolls by them alone: a trackpad's
+    /// `Start`, `End` or `Cancel` event with a delta doesn't move the canvas.
+    #[test]
+    fn unsmoothed_pan_ignores_wheel_events_outside_the_move_phase() {
+        let ctx = Context::default();
+        configure(&ctx);
+        let owner = Id::unique("test-unsmoothed-phase");
+        let event = |phase: TouchPhase| Event::MouseWheel {
+            source: egui::MouseWheelSource::Unknown,
+            unit: MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, -30.0),
+            phase,
+            modifiers: Modifiers::NONE,
+        };
+        let pan_of = |n: u32, events: Vec<Event>| {
+            let raw = RawInput { time: Some(f64::from(n) / 60.0), predicted_dt: 1.0 / 60.0, events, ..Default::default() };
+            let mut pan = Vec2::ZERO;
+            let mut out = ctx.run_ui(raw, |ui| {
+                if let Some(Wheel::Pan(d)) = read_with(ui.ctx(), false, true, true, owner, true, false, true) {
+                    pan = d;
+                }
+            });
+            out.textures_delta.clear();
+            pan
+        };
+        for (n, phase) in [TouchPhase::Start, TouchPhase::End, TouchPhase::Cancel].into_iter().enumerate() {
+            let n = u32::try_from(n).unwrap_or(0) * 2;
+            assert_eq!(pan_of(n, vec![event(phase)]), Vec2::ZERO, "{phase:?} doesn't pan");
+            assert_eq!(pan_of(n + 1, Vec::new()), Vec2::ZERO, "nor after {phase:?}");
+        }
+        let moved = pan_of(10, vec![event(TouchPhase::Start), event(TouchPhase::Move), event(TouchPhase::End)]);
+        assert!(near(moved, Vec2::new(0.0, -30.0)), "only the Move delta pans: {moved:?}");
     }
 
     /// Pan smoothing off (the canvas, #9479) only stops the *pan* gliding. A plain wheel that zooms
