@@ -1531,7 +1531,9 @@ fn reveal_in_finder_on_windows_passes_the_clicked_tabs_saved_path() {
     s.execute("file.new", json!({"width": 8, "height": 8, "name": "other"})).unwrap();
 
     let r = s.execute("file.revealInFinder", json!({"document": 0, "dryRun": true})).unwrap();
-    assert_eq!(r["program"], "explorer");
+    // The Windows Explorer by full path: a bare name would first find an explorer.exe in the app's folder.
+    let explorer = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap()).join("explorer.exe");
+    assert_eq!(r["program"], json!(explorer.to_string_lossy()));
     assert_eq!(r["args"], json!(["/select,", r"C:\项目 图片\海报 🖼.png"]));
 }
 

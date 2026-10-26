@@ -116,16 +116,22 @@ fn os_locale() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn os_locale() -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out = std::process::Command::new("reg")
-        .args(["query", "HKCU\\Control Panel\\International", "/v", "LocaleName"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
+    let out = locale_query()?.output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     // "    LocaleName    REG_SZ    ja-JP"
     text.lines().find(|l| l.contains("LocaleName")).and_then(|l| l.split_whitespace().last()).map(str::to_string)
+}
+
+/// `reg query` for the UI locale, with `reg.exe` by full path: by bare name, Windows first looks in
+/// the app's own folder, so a `reg.exe` lying next to a portable PhotoCraft would start (#9666).
+#[cfg(target_os = "windows")]
+fn locale_query() -> Option<std::process::Command> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let root = std::env::var_os("SystemRoot").or_else(|| std::env::var_os("windir")).map(std::path::PathBuf::from).filter(|p| p.is_absolute())?;
+    let mut cmd = std::process::Command::new(root.join("System32").join("reg.exe"));
+    cmd.args(["query", "HKCU\\Control Panel\\International", "/v", "LocaleName"]).creation_flags(CREATE_NO_WINDOW);
+    Some(cmd)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -560,6 +566,17 @@ pub fn face_index_for_family(bytes: &[u8], family: &str) -> u32 {
 mod tests {
     use super::*;
     use CjkScript::*;
+
+    /// `reg.exe` runs from System32, not from wherever a bare name would find one first (#9666),
+    /// and the query still answers the UI locale.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn locale_query_runs_the_system_reg() {
+        let cmd = locale_query().unwrap();
+        let system = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32").join("reg.exe");
+        assert_eq!(std::path::Path::new(cmd.get_program()), system);
+        assert!(os_locale().is_some_and(|l| !l.is_empty()));
+    }
 
     #[test]
     fn locale_orders() {
