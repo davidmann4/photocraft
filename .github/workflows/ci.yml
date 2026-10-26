@@ -425,8 +425,10 @@ jobs:
   # the PR forever, so this job always reports: red if any job failed or was cancelled, green if
   # every job passed or was skipped. Required checks match job names: keep this name.
   ci-passed:
-    name: ci passed
     # Skipped, like every other job, in the run that adding a label other than `full-ci` starts.
+    # That run reports under another name: a skipped required check counts as passed, and the
+    # newest check of a name wins, so a skipped `ci passed` would turn an earlier red one green.
+    name: ${{ (github.event.action != 'labeled' || github.event.label.name == 'full-ci') && 'ci passed' || 'ci passed (label run)' }}
     if: always() && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')
     needs: [platforms, gate, windows, test-without-heif, corpus, web, fuzz]
     runs-on: ubuntu-latest
