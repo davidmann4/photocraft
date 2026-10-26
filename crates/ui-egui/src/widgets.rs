@@ -1769,15 +1769,25 @@ pub fn combo_list<R>(
         let rows_id = popup_id.with("rows");
         let rows = ctx.data(|d| d.get_temp::<f32>(rows_id));
         let up = rows.is_some_and(|rows| rows > below) && above > below;
-        let (align, room) = if up { (egui::RectAlign::TOP_START, above) } else { (egui::RectAlign::BOTTOM_START, below) };
         // Only the room that side has, even when it is small: a taller list would be pushed back
         // into the window, over its button (#5495 review).
-        let room = room.max(0.0);
+        let room = (if up { above } else { below }).max(0.0);
+        // Above the button the list's top is placed from its known height: egui would place its
+        // bottom by the size the list had last frame, so it would move as it settles, under a
+        // click aimed at a row. `chrome` is the popup frame's margin and stroke.
+        let anchor = match rows.filter(|_| up) {
+            Some(rows) => {
+                let chrome = egui::Frame::popup(&ctx.global_style()).total_margin().sum().y;
+                let top = button.rect.top() - rows.min(room) - chrome;
+                egui::Rect::from_x_y_ranges(button.rect.x_range(), top - button.rect.height()..=top)
+            }
+            None => button.rect,
+        };
         let parent_layer = ui.layer_id();
         let inner = egui::Popup::menu(&button)
             .id(popup_id)
-            .anchor(button.rect)
-            .align(align)
+            .anchor(anchor)
+            .align(egui::RectAlign::BOTTOM_START)
             .align_alternatives(&[])
             .width(button.rect.width())
             .close_behavior(close)
