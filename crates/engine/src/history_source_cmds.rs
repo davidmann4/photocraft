@@ -366,9 +366,7 @@ mod tests {
             json!({"state": 1.5}),
             json!({"state": "1"}),
             json!({"state": [1]}),
-            // Snapshot 0 is the first snapshot (the document as opened); no others exist.
             json!({"snapshot": 1}),
-            json!({"snapshot": 2}),
             json!({"snapshot": -1}),
             json!({"snapshot": "Open"}),
             json!({"snapshot": "Open", "state": 1}),
@@ -377,5 +375,7 @@ mod tests {
             assert!(s.execute(CMD, p.clone()).is_err(), "{p}");
         }
         assert_eq!(s.active().unwrap().history.brush_source(), Some(0), "nothing changed");
+        // Snapshot 0 is the document as opened, so it is a valid source.
+        assert_eq!(s.execute(CMD, json!({"snapshot": 0})).unwrap()["snapshot"], 0);
     }
 }
