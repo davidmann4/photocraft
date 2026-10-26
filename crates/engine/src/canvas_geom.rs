@@ -141,6 +141,9 @@ pub(crate) fn transform_layer_geometry(l: &mut Layer, a: &Affine, content: bool,
             if let Some(f) = &mut sh.fill {
                 map_fill(a, f);
             }
+            if let Some(st) = &mut sh.stroke {
+                map_fill(a, &mut st.paint);
+            }
             if content {
                 crate::vector_cmds::transform_shape(sh, a);
             }
