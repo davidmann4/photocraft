@@ -116,7 +116,7 @@ fn os_locale() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn os_locale() -> Option<String> {
-    let out = locale_query()?.output().ok()?;
+    let out = locale_query().output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     // "    LocaleName    REG_SZ    ja-JP"
     text.lines().find(|l| l.contains("LocaleName")).and_then(|l| l.split_whitespace().last()).map(str::to_string)
@@ -125,13 +125,14 @@ fn os_locale() -> Option<String> {
 /// `reg query` for the UI locale, with `reg.exe` by full path: by bare name, Windows first looks in
 /// the app's own folder, so a `reg.exe` lying next to a portable PhotoCraft would start (#9666).
 #[cfg(target_os = "windows")]
-fn locale_query() -> Option<std::process::Command> {
+fn locale_query() -> std::process::Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let root = std::env::var_os("SystemRoot").or_else(|| std::env::var_os("windir")).map(std::path::PathBuf::from).filter(|p| p.is_absolute())?;
+    let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).filter(|p| p.is_absolute());
+    let root = root.unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
     let mut cmd = std::process::Command::new(root.join("System32").join("reg.exe"));
     cmd.args(["query", "HKCU\\Control Panel\\International", "/v", "LocaleName"]).creation_flags(CREATE_NO_WINDOW);
-    Some(cmd)
+    cmd
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -572,7 +573,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn locale_query_runs_the_system_reg() {
-        let cmd = locale_query().unwrap();
+        let cmd = locale_query();
         let system = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32").join("reg.exe");
         assert_eq!(std::path::Path::new(cmd.get_program()), system);
         assert!(os_locale().is_some_and(|l| !l.is_empty()));

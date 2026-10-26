@@ -413,21 +413,21 @@ fn ensure_folder(program: &str, args: &[String]) -> Result<()> {
 /// The file-manager invocation that selects `path` on this platform.
 pub fn reveal_command(path: &str) -> Result<(String, Vec<String>)> {
     let (program, args) = reveal_command_on(std::env::consts::OS, path)?;
-    Ok((system_program(program)?, args))
+    Ok((system_program(program), args))
 }
 
 /// Windows tools run by full path: by bare name, Windows first looks in the app's own folder, so
 /// an `explorer.exe` lying next to a portable PhotoCraft would start instead (#9666).
 #[cfg(windows)]
-fn system_program(program: &str) -> Result<String> {
-    let root = std::env::var_os("SystemRoot").or_else(|| std::env::var_os("windir")).map(std::path::PathBuf::from).filter(|p| p.is_absolute());
-    let root = root.ok_or_else(|| other(format!("{program} can't be started: the Windows folder (SystemRoot) is not set")))?;
-    Ok(root.join(format!("{program}.exe")).to_string_lossy().into_owned())
+fn system_program(program: &str) -> String {
+    let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).filter(|p| p.is_absolute());
+    let root = root.unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+    root.join(format!("{program}.exe")).to_string_lossy().into_owned()
 }
 
 #[cfg(not(windows))]
-fn system_program(program: &str) -> Result<String> {
-    Ok(program.to_string())
+fn system_program(program: &str) -> String {
+    program.to_string()
 }
 
 /// [`reveal_command`] on the platform `os` (a `std::env::consts::OS` value).
