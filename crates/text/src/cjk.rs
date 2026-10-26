@@ -128,11 +128,16 @@ fn os_locale() -> Option<String> {
 fn locale_query() -> std::process::Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).filter(|p| p.is_absolute());
-    let root = root.unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
-    let mut cmd = std::process::Command::new(root.join("System32").join("reg.exe"));
+    let mut cmd = std::process::Command::new(windows_root(std::env::var_os("SystemRoot")).join("System32").join("reg.exe"));
     cmd.args(["query", "HKCU\\Control Panel\\International", "/v", "LocaleName"]).creation_flags(CREATE_NO_WINDOW);
     cmd
+}
+
+/// The Windows folder for the `SystemRoot` value `system_root`: `C:\Windows` when it is unset or
+/// not an absolute path (a relative one would resolve against the working directory).
+#[cfg(target_os = "windows")]
+fn windows_root(system_root: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    system_root.map(std::path::PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -574,9 +579,22 @@ mod tests {
     #[test]
     fn locale_query_runs_the_system_reg() {
         let cmd = locale_query();
-        let system = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32").join("reg.exe");
+        let system = windows_root(std::env::var_os("SystemRoot")).join("System32").join("reg.exe");
         assert_eq!(std::path::Path::new(cmd.get_program()), system);
         assert!(os_locale().is_some_and(|l| !l.is_empty()));
+    }
+
+    /// `SystemRoot` unset or relative (which would resolve against the working directory) falls
+    /// back to `C:\Windows`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_windows_folder_falls_back_when_system_root_is_unset_or_relative() {
+        use std::path::PathBuf;
+        assert_eq!(windows_root(Some(r"D:\WinNT".into())), PathBuf::from(r"D:\WinNT"));
+        assert_eq!(windows_root(None), PathBuf::from(r"C:\Windows"));
+        assert_eq!(windows_root(Some(r"Windows".into())), PathBuf::from(r"C:\Windows"));
+        assert_eq!(windows_root(Some(r"\Windows".into())), PathBuf::from(r"C:\Windows"));
+        assert_eq!(windows_root(Some("".into())), PathBuf::from(r"C:\Windows"));
     }
 
     #[test]

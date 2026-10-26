@@ -420,9 +420,14 @@ pub fn reveal_command(path: &str) -> Result<(String, Vec<String>)> {
 /// an `explorer.exe` lying next to a portable PhotoCraft would start instead (#9666).
 #[cfg(windows)]
 fn system_program(program: &str) -> String {
-    let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).filter(|p| p.is_absolute());
-    let root = root.unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
-    root.join(format!("{program}.exe")).to_string_lossy().into_owned()
+    windows_root(std::env::var_os("SystemRoot")).join(format!("{program}.exe")).to_string_lossy().into_owned()
+}
+
+/// The Windows folder for the `SystemRoot` value `system_root`: `C:\Windows` when it is unset or
+/// not an absolute path (a relative one would resolve against the working directory).
+#[cfg(windows)]
+pub(crate) fn windows_root(system_root: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    system_root.map(std::path::PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
 }
 
 #[cfg(not(windows))]
