@@ -376,7 +376,7 @@ mod tests {
             assert!(s.execute(CMD, p.clone()).is_err(), "{p}");
         }
         assert_eq!(s.active().unwrap().history.brush_source(), Some(0), "nothing changed");
-        // The first snapshot History Options › Automatically Create First Snapshot adds is one.
-        assert!(s.execute(CMD, json!({"snapshot": 0})).is_ok());
+        // Snapshot 0 is the document as opened (Automatically Create First Snapshot), so it is a valid source.
+        assert_eq!(s.execute(CMD, json!({"snapshot": 0})).unwrap()["snapshot"], 0);
     }
 }
