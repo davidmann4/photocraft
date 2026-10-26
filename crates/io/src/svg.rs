@@ -268,15 +268,78 @@ fn in_memory(id: usvg::fontdb::ID, db: &mut Arc<usvg::fontdb::Database>) -> usvg
     loaded.into_iter().find(|&n| db.face_source(n).is_some_and(|(_, i)| i == index)).unwrap_or(id)
 }
 
+/// Most `cmap` table bytes [`has_char`] keeps; past it a face is asked on disk (slow, still right).
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_CACHED_CMAP_BYTES: usize = 64 << 20;
+
+/// Whether face `face` maps `c` to a glyph, as usvg's own check decides it. usvg reads a font
+/// file's whole font for every face it asks, so one character no font has re-read every
+/// installed font once per text element (430 ms each with 273 faces). A file face's `cmap` table
+/// is kept instead, read once per process; a file that doesn't load isn't remembered.
+#[cfg(not(target_arch = "wasm32"))]
+fn has_char(db: &usvg::fontdb::Database, face: &usvg::fontdb::FaceInfo, c: char) -> bool {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, PoisonError};
+    use ttf_parser::{Face, Tag, cmap};
+    type Cmaps = (HashMap<(PathBuf, u32), Arc<Vec<u8>>>, usize);
+    static CMAPS: OnceLock<Mutex<Cmaps>> = OnceLock::new();
+    let maps = || CMAPS.get_or_init(Mutex::default).lock().unwrap_or_else(PoisonError::into_inner);
+    let in_cmap =
+        |table: &[u8]| cmap::Table::parse(table).is_some_and(|t| t.subtables.into_iter().any(|s| s.is_unicode() && s.glyph_index(u32::from(c)).is_some()));
+    let usvg_check = |data: &[u8], index| Face::parse(data, index).is_ok_and(|f| f.glyph_index(c).is_some());
+    let usvg::fontdb::Source::File(path) = &face.source else {
+        return db.with_face_data(face.id, usvg_check).unwrap_or(false);
+    };
+    let key = (path.clone(), face.index);
+    if let Some(table) = maps().0.get(&key).cloned() {
+        return in_cmap(&table);
+    }
+    // usvg's check parses the whole face first: one that doesn't parse has no characters. Its
+    // `cmap` is the last such table record (a linear walk, unsorted directories included).
+    let cmap_of = |data: &[u8], index| {
+        let face = Face::parse(data, index).ok()?;
+        let raw = face.raw_face();
+        let record = raw.table_records.into_iter().filter(|r| r.tag == Tag::from_bytes(b"cmap")).last();
+        let table = record.and_then(|r| {
+            let start = usize::try_from(r.offset).ok()?;
+            raw.data.get(start..start.checked_add(usize::try_from(r.length).ok()?)?)
+        });
+        Some(table.unwrap_or_default().to_vec())
+    };
+    let Some(table) = db.with_face_data(face.id, cmap_of).flatten() else {
+        return false;
+    };
+    let found = in_cmap(&table);
+    let mut maps = maps();
+    // An import that missed at the same time may have kept it already.
+    if !maps.0.contains_key(&key) && maps.1.saturating_add(table.len()) <= MAX_CACHED_CMAP_BYTES {
+        maps.1 = maps.1.saturating_add(table.len());
+        maps.0.insert(key, Arc::new(table));
+    }
+    found
+}
+
+/// usvg's fallback choice (the first face, in database order, not used yet, sharing the base
+/// face's style, weight or stretch and having `c`), asked through [`has_char`].
+#[cfg(not(target_arch = "wasm32"))]
+fn fallback_face(c: char, used: &[usvg::fontdb::ID], db: &usvg::fontdb::Database) -> Option<usvg::fontdb::ID> {
+    let base = db.face(*used.first()?)?;
+    db.faces()
+        .filter(|f| !used.contains(&f.id))
+        .filter(|f| base.style == f.style || base.weight == f.weight || base.stretch == f.stretch)
+        .find(|f| has_char(db, f, c))
+        .map(|f| f.id)
+}
+
 /// usvg's font choice, with the chosen faces read from memory ([`in_memory`]).
 fn font_resolver() -> usvg::FontResolver<'static> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let select = usvg::FontResolver::default_font_selector();
-        let fallback = usvg::FontResolver::default_fallback_selector();
         usvg::FontResolver {
             select_font: Box::new(move |font, db| select(font, db).map(|id| in_memory(id, db))),
-            select_fallback: Box::new(move |c, used, db| fallback(c, used, db).map(|id| in_memory(id, db))),
+            select_fallback: Box::new(|c, used, db| fallback_face(c, used, db).map(|id| in_memory(id, db))),
         }
     }
     #[cfg(target_arch = "wasm32")]
@@ -1279,6 +1342,80 @@ mod tests {
             assert!(bytes.iter().all(|&b| b == bytes[0]), "round {round}: {bytes:x?}");
             let _ = std::fs::remove_file(&path);
         }
+    }
+
+    /// #9671: the fallback search for a character the text's font lacks reads each font file's
+    /// character map once per process, not the whole file on every text element (430 ms an
+    /// element with 273 installed faces). A second import still finds the fallback face after
+    /// its file stopped being readable, so it didn't go back to the disk.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_fallback_search_reads_each_font_file_once() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static GONE: AtomicBool = AtomicBool::new(false);
+        fn path() -> std::path::PathBuf {
+            std::env::temp_dir().join(format!("photocraft-svg-test-fallback-{}.ttf", std::process::id()))
+        }
+        fn inter_and_mono_on_disk() -> Arc<usvg::fontdb::Database> {
+            std::fs::write(path(), include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf")).unwrap();
+            let mut db = usvg::fontdb::Database::new();
+            db.load_font_data(include_bytes!("../../../assets/fonts/Inter-Regular.ttf").to_vec());
+            db.load_font_file(path()).unwrap();
+            if GONE.load(Ordering::SeqCst) {
+                std::fs::write(path(), b"not a font any more").unwrap();
+            }
+            Arc::new(db)
+        }
+        // Inter has no box-drawing characters; JetBrains Mono has.
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"60\"><text x=\"5\" y=\"45\" font-size=\"48\" font-family=\"Inter\">I\u{2500}I</text></svg>";
+        let outlines = |parsed: Parsed| {
+            let layers = import_parsed("t", parsed, MAX_GROUP_DEPTH).unwrap().document.layers;
+            let groups = layers.into_iter().filter_map(|l| if let LayerContent::Group(g) = l.content { Some(g) } else { None });
+            groups.flat_map(|g| g.children).filter_map(|l| if let LayerContent::Shape(s) = l.content { Some(s.path) } else { None }).collect::<Vec<_>>()
+        };
+        let first = parse_with(svg.as_bytes(), inter_and_mono_on_disk).unwrap();
+        let mono =
+            first.tree.fontdb().faces().any(|f| f.families.iter().any(|(n, _)| n == "JetBrains Mono") && matches!(f.source, usvg::fontdb::Source::Binary(_)));
+        assert!(mono, "the box-drawing character falls back to JetBrains Mono");
+        let first = outlines(first);
+        GONE.store(true, Ordering::SeqCst);
+        let second = outlines(parse_with(svg.as_bytes(), inter_and_mono_on_disk).unwrap());
+        let _ = std::fs::remove_file(path());
+        assert!(first.iter().any(|p| !p.subpaths.is_empty()), "the text has outlines");
+        assert!(second == first, "the second import set the character in the same fallback face");
+    }
+
+    /// #9671: the kept `cmap` is the one usvg reads (the last such record of a linear walk), also
+    /// in a font whose table directory isn't sorted by tag, where a binary search misses it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_fallback_search_reads_the_cmap_of_an_unsorted_font() {
+        fn inter_and_unsorted_mono_on_disk() -> Arc<usvg::fontdb::Database> {
+            let mut font = include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf").to_vec();
+            let count = usize::from(u16::from_be_bytes([font[4], font[5]]));
+            // The `cmap` record moves to the end of the directory.
+            let mut records: Vec<Vec<u8>> = font[12..12 + count * 16].chunks(16).map(<[u8]>::to_vec).collect();
+            let at = records.iter().position(|r| r.starts_with(b"cmap")).unwrap();
+            let cmap = records.remove(at);
+            records.push(cmap);
+            font.splice(12..12 + count * 16, records.concat());
+            let raw = ttf_parser::RawFace::parse(&font, 0).unwrap();
+            assert!(raw.table(ttf_parser::Tag::from_bytes(b"cmap")).is_none(), "a binary search misses the cmap");
+            assert!(raw.table(ttf_parser::Tag::from_bytes(b"name")).is_some(), "fontdb still finds the name");
+            let path = std::env::temp_dir().join(format!("photocraft-svg-test-unsorted-{}.ttf", std::process::id()));
+            std::fs::write(&path, font).unwrap();
+            let mut db = usvg::fontdb::Database::new();
+            db.load_font_data(include_bytes!("../../../assets/fonts/Inter-Regular.ttf").to_vec());
+            db.load_font_file(&path).unwrap();
+            Arc::new(db)
+        }
+        let svg =
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"60\"><text x=\"5\" y=\"45\" font-family=\"Inter\">I\xE2\x94\x80I</text></svg>";
+        let parsed = parse_with(svg, inter_and_unsorted_mono_on_disk).unwrap();
+        let _ = std::fs::remove_file(std::env::temp_dir().join(format!("photocraft-svg-test-unsorted-{}.ttf", std::process::id())));
+        let mono =
+            parsed.tree.fontdb().faces().any(|f| f.families.iter().any(|(n, _)| n == "JetBrains Mono") && matches!(f.source, usvg::fontdb::Source::Binary(_)));
+        assert!(mono, "the box-drawing character falls back to JetBrains Mono");
     }
 
     /// #9406: moving a font collection into memory keeps its faces in their order, so the
