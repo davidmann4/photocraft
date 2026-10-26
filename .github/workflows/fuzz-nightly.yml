@@ -47,6 +47,8 @@ jobs:
     timeout-minutes: 120
     name: fuzz (${{ matrix.target.crate }}/${{ matrix.target.name }})
     runs-on: ubuntu-latest
+    env:
+        FUZZ_SECONDS: ${{ inputs.fuzz_seconds || (github.event.schedule == '11 1 * * 0' && '1800') || '300' }}
     strategy:
       fail-fast: false
       # Leaves runners free for pull-request CI while the run lasts.
@@ -108,6 +110,18 @@ jobs:
           - { crate: text, name: font_bytes }
           - { crate: text, name: type_layer }
     steps:
+      # libFuzzer reads -max_total_time=0 as "no limit": the leg would run into the job timeout and
+      # lose its corpus. Refuse anything but 1..2400 seconds before building.
+      - name: Check the fuzz duration
+        run: |
+          case "$FUZZ_SECONDS" in
+            '' | *[!0-9]* | ?????*) ok=no ;;
+            *) if [ "$((10#$FUZZ_SECONDS))" -ge 1 ] && [ "$((10#$FUZZ_SECONDS))" -le 2400 ]; then ok=yes; else ok=no; fi ;;
+          esac
+          if [ "$ok" != yes ]; then
+            echo "::error::fuzz_seconds must be a whole number from 1 to 2400, got '$FUZZ_SECONDS'"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -143,7 +157,6 @@ jobs:
       - name: Fuzz
         working-directory: crates/${{ matrix.target.crate }}
         env:
-          FUZZ_SECONDS: ${{ inputs.fuzz_seconds || (github.event.schedule == '11 1 * * 0' && '1800') || '300' }}
           # Tokens of the format (signatures, tag and key names) that libFuzzer splices into inputs.
           DICT: ${{ matrix.target.dict }}
         # The decoders may ask for one buffer of up to 8 GiB (`photocraft_codecs::Limits::default`
