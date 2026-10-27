@@ -15,7 +15,7 @@ on:
   schedule:
     # Monday to Saturday: a short run per target.
     - cron: "11 1 * * 1-6"
-    # Sunday: a long run per target (the FUZZ_SECONDS expression below matches this string).
+    # Sunday: a long run per target (the FUZZ_SECONDS expression in `settings` matches this string).
     - cron: "11 1 * * 0"
   workflow_dispatch:
     inputs:
@@ -37,7 +37,29 @@ env:
   LPDEST: photocraft-no-such-printer
 
 jobs:
+  # The leg's 75-minute timeout only fits a fuzz run of at most 2400 seconds plus the build and
+  # minimisation, and a cancelled leg skips saving its corpus, so a manual run asking for more (or
+  # for something that isn't a number) fails here before any leg starts.
+  settings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      fuzz_seconds: ${{ steps.seconds.outputs.fuzz_seconds }}
+    steps:
+      - id: seconds
+        env:
+          FUZZ_SECONDS: ${{ inputs.fuzz_seconds || (github.event.schedule == '11 1 * * 0' && '1800') || '300' }}
+        run: |
+          case "$FUZZ_SECONDS" in
+            '' | *[!0-9]* | ?????*) echo "::error::fuzz_seconds must be a whole number of seconds up to 2400, got '$FUZZ_SECONDS'"; exit 1 ;;
+          esac
+          if [ "$FUZZ_SECONDS" -lt 1 ] || [ "$FUZZ_SECONDS" -gt 2400 ]; then
+            echo "::error::fuzz_seconds must be 1 to 2400, got $FUZZ_SECONDS"; exit 1
+          fi
+          echo "fuzz_seconds=$FUZZ_SECONDS" >> "$GITHUB_OUTPUT"
+
   fuzz:
+    needs: settings
     timeout-minutes: 75
     name: fuzz (${{ matrix.target.crate }}/${{ matrix.target.name }})
     runs-on: ubuntu-latest
@@ -107,7 +129,7 @@ jobs:
       - name: Fuzz
         working-directory: crates/${{ matrix.target.crate }}
         env:
-          FUZZ_SECONDS: ${{ inputs.fuzz_seconds || (github.event.schedule == '11 1 * * 0' && '1800') || '300' }}
+          FUZZ_SECONDS: ${{ needs.settings.outputs.fuzz_seconds }}
         # The decoders may ask for one buffer of up to 8 GiB (`photocraft_codecs::Limits::default`
         # `max_alloc`), and a few header bytes are enough to declare that, so libFuzzer's malloc
         # limit sits just above it: only an allocation past the budget counts as a crash. The
