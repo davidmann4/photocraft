@@ -1,5 +1,5 @@
 use super::curvature::curvature_refresh;
-use super::path_ops::targeted_vector_mask;
+use super::path_ops::{active_type_path, targeted_vector_mask};
 use super::pen::{closing, over_first_anchor, shift_45};
 use super::*;
 
@@ -147,7 +147,7 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         // a path tool is active, as in Photoshop: a Work Path left unselected (one a PSD arrived
         // with, or after Ctrl-click Load as Selection) would otherwise cover the marching ants (#6551).
         let anchors = shows_anchors(tool);
-        if let Some(wp) = &doc.work_path
+        if let Some(wp) = doc.work_path.as_ref().filter(|_| work_path_shown_in(app, doc))
             && (anchors || app.ui.selected_path.as_deref() == Some("work"))
         {
             draw_path(wp, anchors);
@@ -164,6 +164,10 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         }
         // A targeted vector mask shows its path with any tool (#196).
         if let Some((_, p)) = targeted_vector_mask(app) {
+            draw_path(&p, anchors);
+        }
+        // So does type on a path's Type Path, which the Pen's Auto Add/Delete edits (#9114).
+        if let Some((_, p)) = active_type_path(app) {
             draw_path(&p, anchors);
         }
         crate::corner_radius::draw(app, painter, &to_scr, accent);
