@@ -175,15 +175,15 @@ fn inline_filter_preview_is_composited_and_recorded_once() {
     app.background_jobs = false;
     app.run("file.new", json!({"width": 320, "height": 240})).unwrap();
     crate::filter_dialog::open(&mut app, "filter.stylize.solarize").unwrap();
-    app.perf.frame_refresh_ms = 0.0;
+    app.perf.stage = Default::default();
     let (_, _, size) = ensure_filter_preview(&mut app, 0, &egui::Context::default()).expect("a preview");
     assert_eq!(size, [320, 240]);
     assert_eq!(app.perf.last_refresh, "filter-preview");
     assert_eq!(app.perf.last_refresh_px, 320 * 240);
-    assert_eq!(app.perf.frame_refresh_ms, app.perf.composite_ms + app.perf.upload_ms, "one record per preview");
+    assert_eq!(app.perf.stage.composite_ms + app.perf.stage.upload_ms, app.perf.composite_ms + app.perf.upload_ms, "one record per preview");
     // Unchanged request: nothing is recomputed or recorded again.
     ensure_filter_preview(&mut app, 0, &egui::Context::default()).expect("the same preview");
-    assert_eq!(app.perf.frame_refresh_ms, app.perf.composite_ms + app.perf.upload_ms);
+    assert_eq!(app.perf.stage.composite_ms + app.perf.stage.upload_ms, app.perf.composite_ms + app.perf.upload_ms);
 }
 
 /// #6326: a filter's live preview is never coarser than the screen. On a document big enough
@@ -285,7 +285,7 @@ fn every_filter_previews_off_the_ui_thread_and_a_newer_value_cancels_the_old() {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             let _ = told.send(job.cancelled());
-            crate::filter_preview_worker::Computed { result: None, ms: 0.0 }
+            crate::dialogs::filter_preview_worker::Computed { result: None, ms: 0.0 }
         })
         .unwrap();
     // The slider moves on and stops: once the value settles, the stale preview is cancelled
@@ -352,7 +352,7 @@ fn gated_blur_preview(app: &mut PhotocraftApp, ctx: &egui::Context) -> (std::syn
                 let buffer = photocraft_compose::flatten(&d);
                 (std::sync::Arc::new(d), buffer)
             });
-            crate::filter_preview_worker::Computed { result, ms: 0.0 }
+            crate::dialogs::filter_preview_worker::Computed { result, ms: 0.0 }
         })
         .expect("the worker starts");
     (release, radius)
@@ -482,7 +482,7 @@ fn a_mid_drag_empty_result_leaves_the_preview_alone() {
     app.filter_preview_worker
         .start(key, ctx.clone(), move |_| {
             wait.recv_timeout(std::time::Duration::from_secs(60)).expect("released");
-            crate::filter_preview_worker::Computed { result: None, ms: 0.0 }
+            crate::dialogs::filter_preview_worker::Computed { result: None, ms: 0.0 }
         })
         .expect("the worker starts");
     app.ui.dialogs[0].fields.insert("radius".into(), json!(moved + 4.0));
@@ -1679,12 +1679,20 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                 assert_eq!(app.session.documents()[0].doc.layer(layer).unwrap(), &original);
                 crate::channel_view::ensure(&mut app, &ctx, 0);
                 let mut delta = ctx.tex_manager().write().take_delta();
-                let egui::ImageData::Color(image) = &delta.set.get(&tex).unwrap()[0].image;
+                let upload = &delta.set.get(&tex).unwrap()[0];
+                let egui::ImageData::Color(image) = &upload.image;
                 let st = &app.session.documents()[0];
+                // Undo redraws only the tiles the stroke changed (#9329): a partial upload of them.
+                let f = factor as i32;
+                let pos = upload.pos.expect("undo uploads only the changed tiles, not the whole mask");
+                let r = DRect::new(pos[0] as i32 * f, pos[1] as i32 * f, (pos[0] + image.size[0]) as i32 * f, (pos[1] + image.size[1]) as i32 * f)
+                    .intersect(&st.doc.bounds());
+                // It covers the stroke's span (x 10..70 along y 30, size 12), so it
+                // proves coverage and not only values.
+                assert!(r.contains_rect(&DRect::new(10, 26, 70, 34)), "undo covers the stroke: {r:?}");
                 assert_eq!(
                     image.pixels,
-                    crate::channel_view::render(&st.doc, &st.channel_view, st.doc.bounds(), factor, crate::channel_view::Look::default(), st.active_layer)
-                        .unwrap(),
+                    crate::channel_view::render(&st.doc, &st.channel_view, r, factor, crate::channel_view::Look::default(), st.active_layer).unwrap(),
                     "undo restores the shown mask"
                 );
                 delta.clear();
