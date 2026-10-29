@@ -455,7 +455,7 @@ fn the_live_outline_matches_the_committed_selection_in_a_rotated_view() {
 }
 
 /// The closed outlines the last frame drew as a solid white line under black dashes: the Type
-/// tools' drag box and the Move tool's layer marquee (four corners, the first repeated).
+/// tools' drag box (four corners, the first repeated).
 fn white_box_outlines(h: &Harness<'static, PhotocraftApp>) -> Vec<Vec<Pos2>> {
     h.output()
         .shapes
@@ -468,6 +468,20 @@ fn white_box_outlines(h: &Harness<'static, PhotocraftApp>) -> Vec<Vec<Pos2>> {
             {
                 Some(p.points.clone())
             }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The slanted edges the last frame drew as marching ants (#7530): each is a white base segment
+/// under black dashes (`ants::shapes`); upright edges go into a pixel mesh instead. The Move tool's
+/// layer marquee in a rotated view.
+fn white_ant_edges(h: &Harness<'static, PhotocraftApp>) -> Vec<[Pos2; 2]> {
+    h.output()
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::LineSegment { points, stroke } if stroke.color == egui::Color32::WHITE => Some(*points),
             _ => None,
         })
         .collect()
@@ -532,9 +546,19 @@ fn the_move_layer_marquee_follows_the_document_axes_in_a_rotated_view() {
         move_to(&mut h, 150.0, 90.0);
         assert!(h.state().layer_box.is_some(), "{rotation}°: the drag draws the layer marquee");
         let xf = view_xform(&h);
-        let drawn = white_box_outlines(&h);
-        assert_eq!(drawn.len(), 1, "{rotation}°: one marquee is drawn: {drawn:?}");
-        assert_doc_box(&xf, &drawn[0], [50.0, 50.0, 150.0, 90.0], &format!("{rotation}°: the layer marquee"));
+        // Four slanted ant edges, each from one corner of the document box to the next. An upright
+        // screen box would have none (its edges go into the ants' pixel mesh).
+        let edges = white_ant_edges(&h);
+        assert_eq!(edges.len(), 4, "{rotation}°: the marquee's four edges are drawn slanted: {edges:?}");
+        let ends: Vec<Pos2> = edges.iter().map(|e| e[0]).collect();
+        assert_doc_box(&xf, &ends, [50.0, 50.0, 150.0, 90.0], &format!("{rotation}°: the layer marquee (edge starts)"));
+        let ends: Vec<Pos2> = edges.iter().map(|e| e[1]).collect();
+        assert_doc_box(
+            &xf,
+            &ends[3..].iter().chain(&ends[..3]).copied().collect::<Vec<_>>(),
+            [50.0, 50.0, 150.0, 90.0],
+            &format!("{rotation}°: the layer marquee (edge ends)"),
+        );
         release_at(&mut h, 150.0, 90.0, Modifiers::NONE);
     }
 }
