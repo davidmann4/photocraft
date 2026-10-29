@@ -669,11 +669,14 @@ fn filter_cost(root: &usvg::Group, base: tiny_skia::Transform, rec: usize, visit
             let world = base.pre_concat(node.abs_transform());
             let mut sub = |root: &usvg::Group, ts: tiny_skia::Transform| cost = cost.saturating_add(filter_cost(root, ts, rec + 1, visits));
             match node {
-                // resvg draws a pattern's tile at the path's scale times the pattern's own.
+                // resvg draws a pattern's tile at the path's scale times the pattern's own, and
+                // only that scale (`get_scale`, no skew or rotation): a skewed patternTransform
+                // whose full-affine bounds are slim still renders a large tile.
                 usvg::Node::Path(p) => {
                     for paint in [p.fill().map(|f| f.paint()), p.stroke().map(|s| s.paint())].into_iter().flatten() {
                         if let usvg::Paint::Pattern(pt) = paint {
-                            sub(pt.root(), world.pre_concat(pt.transform()));
+                            let (sx, sy) = world.pre_concat(pt.transform()).get_scale();
+                            sub(pt.root(), tiny_skia::Transform::from_scale(sx, sy));
                         }
                     }
                 }
