@@ -526,11 +526,6 @@ pub fn filter_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifier
             if app.prefs_rt.snap.is_none() {
                 return ev;
             }
-            if crop_click(app, [x, y]) {
-                app.prefs_rt.snap = None;
-                app.prefs_rt.snap_lines.clear();
-                return ev;
-            }
             follow_reposition(app);
             let disabled = override_for_gesture(app, mods);
             if let Some(s) = app.prefs_rt.snap.as_mut() {
@@ -542,6 +537,11 @@ pub fn filter_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifier
         }
         ToolEvent::Up { x, y } => {
             if app.prefs_rt.snap.is_none() {
+                return ev;
+            }
+            if crop_click(app, [x, y]) {
+                app.prefs_rt.snap = None;
+                app.prefs_rt.snap_lines.clear();
                 return ev;
             }
             follow_reposition(app);
