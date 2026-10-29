@@ -1,7 +1,7 @@
 use super::panel::chevron_icon;
 use super::scrub::take_label_scrub_name;
 use super::slider::wheel_notches_of;
-use super::*;
+use super::{Align2, Pos2, Rect, Response, Sense, StrokeKind, Ui, Vec2, type_ahead, vec2};
 
 /// A compact labelled dropdown in the studio style.
 pub fn dropdown<T: PartialEq + Clone>(ui: &mut Ui, id: &str, name: &str, current: &mut T, options: &[(T, &str)], width: f32) -> bool {
@@ -122,7 +122,7 @@ fn dropdown_with<T: PartialEq + Clone>(
     if wheel && !over_list {
         let stepped = wheel_steps(ui, wheel_id, response.hovered(), current, options);
         wheeled = !stepped.is_empty();
-        if wheeled && egui::ComboBox::is_open(ui.ctx(), response.id) {
+        if wheeled && craft_ui::ComboBox::is_open(ui.ctx(), response.id) {
             ui.data_mut(|d| d.insert_temp(reveal_id, true));
         }
         chosen.extend(stepped);
@@ -183,7 +183,7 @@ fn wheel_steps<T: PartialEq + Clone>(ui: &mut Ui, id: egui::Id, hovered: bool, c
 }
 
 /// Give a dropdown keyboard focus when it opens, then use the arrow keys to move through its
-/// choices. `egui::ComboBox` opens a popup but leaves focus on the canvas by default, which makes
+/// choices. `craft_ui::ComboBox` opens a popup but leaves focus on the canvas by default, which makes
 /// controls such as the Layers panel's Blend Mode dropdown unreachable from the keyboard.
 fn combo_box_arrow_keys<T: PartialEq + Clone>(ui: &mut Ui, response: &Response, current: &mut T, options: &[(T, &str)]) -> bool {
     if response.clicked() {
@@ -191,7 +191,7 @@ fn combo_box_arrow_keys<T: PartialEq + Clone>(ui: &mut Ui, response: &Response, 
     }
     // The popup, rather than its button, becomes the focused egui layer after it opens. While it
     // is open it owns its navigation keys, even though `response.has_focus()` is then false.
-    if !egui::ComboBox::is_open(ui.ctx(), response.id) || options.is_empty() {
+    if !craft_ui::ComboBox::is_open(ui.ctx(), response.id) || options.is_empty() {
         return false;
     }
     let step = if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
@@ -237,7 +237,7 @@ pub fn menu_scroll<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R
 /// on that side either. Over the button, the release of the click that opened it would choose the
 /// row under the pointer. Its left edge is the button's and its side only depends on its rows'
 /// height, so it stays put while its value (and with it the button's width) changes, as the wheel
-/// steps it over the open list (#1747). The ids are egui's `ComboBox` ones, so
+/// steps it over the open list (#1747). The ids are `craft_ui::ComboBox`'s (egui's), so
 /// `ComboBox::is_open` and [`crate::press_menu::PressCombo`] apply.
 pub fn combo_list<R>(
     ui: &mut Ui,
