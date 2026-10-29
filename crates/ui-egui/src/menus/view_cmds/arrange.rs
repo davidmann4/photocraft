@@ -119,7 +119,8 @@ pub(super) fn arrange(app: &mut PhotocraftApp, k: &str, p: &Value) -> Result<Val
             };
             app.ui.views.iter_mut().enumerate().for_each(|(d, v)| apply(v, d, crop && d == i));
             app.ui.windows.iter_mut().for_each(|w| apply(&mut w.view, w.document, false));
-            Ok(json!({"zoom": src.zoom, "center": src.center, "rotation": rotation}))
+            // Match Zoom and Match Location copy no rotation: they report the camera's as it is.
+            Ok(json!({"zoom": src.zoom, "center": src.center, "rotation": if rot { rotation } else { src.rotation }}))
         }
         _ => Err(format!("unknown arrangement {k}")),
     }

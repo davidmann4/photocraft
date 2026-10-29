@@ -489,6 +489,30 @@ fn match_rotation_leaves_a_pending_crops_turn_out() {
     }
 }
 
+/// Match Zoom and Match Location copy no rotation, so with a crop turning the active view they
+/// report its camera's turn as it is and leave every view's rotation alone (#9308).
+#[test]
+fn match_zoom_and_location_report_the_turned_camera() {
+    let ctx = egui::Context::default();
+    for id in ["window.arrange.matchZoom", "window.arrange.matchLocation"] {
+        let mut app = app();
+        app.run("file.new", json!({"width": 300, "height": 150})).unwrap();
+        app.sync_views();
+        assert!(app.session.set_active(0));
+        app.sync_views();
+        let v = &mut app.ui.views[0];
+        (v.zoom, v.center, v.fit_pending, v.rotation) = (1.0, [100.0, 50.0], false, 0.0);
+        app.ui.views[1].rotation = 15.0;
+        with_frame(&mut app);
+        screen_drag(&mut app, &[pos2(450.0, 300.0), pos2(440.0, 320.0), pos2(370.0, 380.0)], NONE);
+        let turned = view_rotation(&app);
+        assert!((turned - 90.0).abs() < 0.01, "{id}: the view turned with the frame");
+        let r = crate::menus::invoke(&mut app, &ctx, id, json!({})).unwrap();
+        assert!((r["rotation"].as_f64().unwrap() - f64::from(turned)).abs() < 0.01, "{id}: {r}");
+        assert_eq!(app.ui.views[1].rotation, 15.0, "{id}: the other view keeps its rotation");
+    }
+}
+
 #[test]
 fn picking_the_crop_tool_turns_a_rotated_view_upright() {
     let mut app = app();
