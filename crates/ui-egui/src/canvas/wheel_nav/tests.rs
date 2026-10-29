@@ -431,6 +431,44 @@ fn animated_zoom_keeps_the_sideways_wheel_unsmoothed_with_animations_off() {
     assert!(pans[1..].iter().all(|p| *p == Vec2::ZERO), "no glide after it: {pans:?}");
 }
 
+/// One frame of `events` read with pan smoothing off (the canvas, #9479) and Animated Zoom on.
+fn unsmoothed_frame(events: Vec<Event>, zoom_with_wheel: bool) -> Option<Wheel> {
+    let ctx = Context::default();
+    configure(&ctx);
+    let raw = RawInput { time: Some(0.0), predicted_dt: 1.0 / 60.0, events, ..Default::default() };
+    let mut wheel = None;
+    let mut out = ctx.run_ui(raw, |ui| wheel = read_with(ui.ctx(), zoom_with_wheel, true, true, Id::unique("test-mixed"), true, false, true));
+    out.textures_delta.clear();
+    wheel
+}
+
+/// Unsmoothed, the canvas pans by the wheel events of the gesture in progress only (the latest
+/// event's modifiers pick it, as for zooming): a ⌥ notch (a zoom) or a ⇧ notch (a snap zoom)
+/// arriving in the same frame as the panning notch must not pan the canvas too.
+#[test]
+fn unsmoothed_pan_takes_only_the_wheel_events_of_the_gesture_in_progress() {
+    let down = Vec2::new(0.0, -1.0);
+    // ⌥ zooms, then a plain notch pans: one notch, not two.
+    let pan = unsmoothed_frame(vec![wheel(down, Modifiers::ALT), wheel(down, Modifiers::NONE)], false);
+    assert_eq!(pan, Some(Wheel::Pan(Vec2::new(0.0, -40.0))), "only the plain notch pans");
+    // ⇧ + wheel pans sideways: a plain notch before it in the frame is not part of that.
+    let pan = unsmoothed_frame(vec![wheel(down, Modifiers::NONE), wheel(down, Modifiers::SHIFT)], false);
+    assert_eq!(pan, Some(Wheel::Pan(Vec2::new(-40.0, 0.0))), "only the ⇧ notch pans, sideways");
+    // Zoom with Scroll Wheel: ⌥ + wheel pans; the plain notch before it zooms and doesn't pan.
+    let pan = unsmoothed_frame(vec![wheel(down, Modifiers::NONE), wheel(down, Modifiers::ALT)], true);
+    assert_eq!(pan, Some(Wheel::Pan(Vec2::new(0.0, -40.0))), "only the ⌥ notch pans");
+    // ...and with the plain wheel zooming, a ⇧ snap notch earlier in the frame doesn't pan sideways.
+    let zoom = unsmoothed_frame(vec![wheel(Vec2::new(0.0, 1.0), Modifiers::SHIFT), wheel(down, Modifiers::NONE)], true);
+    assert!(matches!(zoom, Some(Wheel::Zoom(f)) if f < 1.0), "the plain notch zooms, nothing pans: {zoom:?}");
+    // ⌘/Ctrl + wheel is part of the plain gesture: it pans sideways alongside a plain notch.
+    let pan = unsmoothed_frame(vec![wheel(down, CTRL), wheel(down, Modifiers::NONE)], false);
+    assert_eq!(pan, Some(Wheel::Pan(Vec2::new(-40.0, -40.0))), "⌘/Ctrl + wheel and a plain notch both pan");
+    // A held ⌥ the wheel event itself misses (#8049) still makes it the ⌥ gesture's.
+    let alt_key = |pressed: bool| Event::Key { key: Key::AltLeft, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+    let pan = unsmoothed_frame(vec![wheel(down, Modifiers::NONE), alt_key(true), wheel(down, Modifiers::NONE), alt_key(false)], true);
+    assert_eq!(pan, Some(Wheel::Pan(Vec2::new(0.0, -40.0))), "only the notch under the held ⌥ pans");
+}
+
 /// A diagonal point step with ⌥ is measured as egui measures it, folded onto one axis: (5, 5)
 /// is a 10-point step, which egui smooths, so Animated Zoom eases it.
 #[test]

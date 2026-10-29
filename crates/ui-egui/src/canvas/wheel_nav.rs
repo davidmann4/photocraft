@@ -363,14 +363,12 @@ pub fn read_with(
     let notch = options.line_scroll_speed;
 
     // --- Modifier tracking (always runs for all callers) ---
-    let (scroll, zoom_delta, latest_alt, latest_shift, wheel, page) = ctx.input(|i| {
+    let (smoothed, zoom_delta, latest_alt, latest_shift, wheel, page) = ctx.input(|i| {
         let wheel = wheel_events(i);
-        let latest_alt = wheel.last().map(|(_, _, m, _)| m.alt && !m.command && !m.ctrl);
-        let latest_shift = wheel.last().map(|(_, _, m, _)| m.shift && !m.command && !m.ctrl);
-        let scroll = if smooth { i.smooth_scroll_delta } else { unsmoothed_scroll(i, &options) };
-        (scroll, pinch_factor(i, touch_gestures), latest_alt, latest_shift, wheel, i.content_rect().height())
+        let latest_alt = wheel.last().map(|(_, _, m, _)| gesture_mode(m).0);
+        let latest_shift = wheel.last().map(|(_, _, m, _)| gesture_mode(m).1);
+        (i.smooth_scroll_delta, pinch_factor(i, touch_gestures), latest_alt, latest_shift, wheel, i.content_rect().height())
     });
-    let wheel = mark_unsmoothed(ctx, wheel);
     let alt = match latest_alt {
         Some(a) => {
             ctx.data_mut(|d| d.insert_temp(alt_id(), a));
@@ -385,6 +383,8 @@ pub fn read_with(
         }
         None => ctx.data(|d| d.get_temp::<bool>(shift_id())).unwrap_or(false),
     };
+    let scroll = if smooth { smoothed } else { unsmoothed_scroll(&wheel, (alt, shift), &options, page) };
+    let wheel = mark_unsmoothed(ctx, wheel);
 
     if !hovered {
         return None;
@@ -493,18 +493,22 @@ pub fn read_with(
     }
 }
 
+/// The ⌥/Alt and ⇧/Shift gesture a wheel event belongs to. With ⌘/Ctrl it is neither (it
+/// scrolls sideways, [`configure`]), so it belongs to the plain wheel.
+fn gesture_mode(m: &Modifiers) -> (bool, bool) {
+    (m.alt && !m.command && !m.ctrl, m.shift && !m.command && !m.ctrl)
+}
+
 /// This frame's wheel scroll without egui's smoothing (points, content direction): what egui's
 /// smoothed delta spreads over the next frames, all of it now and no tail after. ⇧ or ⌘/Ctrl fold
 /// it sideways as egui does ([`configure`]), so every pan, plain or sideways, moves at once.
-fn unsmoothed_scroll(i: &InputState, options: &egui::InputOptions) -> Vec2 {
-    let page = i.content_rect().height();
-    i.events.iter().fold(Vec2::ZERO, |sum, e| {
-        let Event::MouseWheel { unit, delta, modifiers, phase, .. } = e else {
-            return sum;
-        };
+/// Only the wheel events of the gesture in progress (`mode`, the ⌥ and ⇧ of [`gesture_mode`])
+/// count: a ⌥ zoom notch in the same frame as a plain pan notch doesn't pan too.
+fn unsmoothed_scroll(wheel: &[(MouseWheelUnit, Vec2, Modifiers, TouchPhase)], mode: (bool, bool), options: &egui::InputOptions, page: f32) -> Vec2 {
+    wheel.iter().fold(Vec2::ZERO, |sum, (unit, delta, modifiers, phase)| {
         // egui scrolls only by `Move` events; a trackpad's `Start`, `End` or `Cancel` delta
         // (`WheelState::on_wheel_event`) is not a scroll.
-        if *phase != TouchPhase::Move {
+        if *phase != TouchPhase::Move || gesture_mode(modifiers) != mode {
             return sum;
         }
         // egui turns these into its own zoom, not a scroll.
