@@ -50,7 +50,7 @@ pub const ALLOWLIST: &[Allowed] = &[
     // background colour on every drag frame, so the change never reaches the journal, action
     // recording or the control channel's event log. Fix: dispatch `tools.setColors` (it already exists).
     Allowed {
-        file: "crates/ui-egui/src/panels.rs",
+        file: "crates/ui-egui/src/panels/color.rs",
         func: "color_field",
         reason: "Color panel field, hue strip and readout assign session.tools.foreground/background; dispatch tools.setColors",
     },
@@ -118,24 +118,7 @@ fn lex(src: &str) -> Vec<Token> {
                 i += 1;
             }
         } else if ch == '/' && at(i + 1) == '*' {
-            let mut depth = 0usize;
-            while i < c.len() {
-                if at(i) == '/' && at(i + 1) == '*' {
-                    depth += 1;
-                    i += 2;
-                } else if at(i) == '*' && at(i + 1) == '/' {
-                    depth = depth.saturating_sub(1);
-                    i += 2;
-                    if depth == 0 {
-                        break;
-                    }
-                } else {
-                    if at(i) == '\n' {
-                        line += 1;
-                    }
-                    i += 1;
-                }
-            }
+            (i, line) = skip_block_comment(&c, i, line);
         } else if let Some(hashes) = raw_string_start(&c, i) {
             // r"…", r#"…"#, br#"…"#: skip to the quote followed by the same number of hashes.
             let start_line = line;
@@ -153,27 +136,7 @@ fn lex(src: &str) -> Vec<Token> {
             out.push(Token { kind: Kind::Other, line: start_line });
         } else if ch == '"' || (ch == 'b' && at(i + 1) == '"') || (ch == 'c' && at(i + 1) == '"') {
             let start_line = line;
-            i += if ch == '"' { 1 } else { 2 };
-            while i < c.len() {
-                match at(i) {
-                    '\\' => {
-                        // A line continuation (`\` before a newline) still ends a source line.
-                        if at(i + 1) == '\n' {
-                            line += 1;
-                        }
-                        i += 2;
-                    }
-                    '"' => {
-                        i += 1;
-                        break;
-                    }
-                    '\n' => {
-                        line += 1;
-                        i += 1;
-                    }
-                    _ => i += 1,
-                }
-            }
+            (i, line) = skip_string(&c, i + if ch == '"' { 1 } else { 2 }, line);
             out.push(Token { kind: Kind::Other, line: start_line });
         } else if ch == '\'' || (ch == 'b' && at(i + 1) == '\'') {
             // Char literal ('a', '\n', b'x') or lifetime/label ('a, 'static).
@@ -210,6 +173,57 @@ fn lex(src: &str) -> Vec<Token> {
         }
     }
     out
+}
+
+/// Skip a (nested) block comment starting at `i`; returns the index after it and the new line.
+fn skip_block_comment(c: &[char], mut i: usize, mut line: usize) -> (usize, usize) {
+    let at = |k: usize| c.get(k).copied().unwrap_or('\0');
+    let mut depth = 0usize;
+    while i < c.len() {
+        if at(i) == '/' && at(i + 1) == '*' {
+            depth += 1;
+            i += 2;
+        } else if at(i) == '*' && at(i + 1) == '/' {
+            depth = depth.saturating_sub(1);
+            i += 2;
+            if depth == 0 {
+                break;
+            }
+        } else {
+            if at(i) == '\n' {
+                line += 1;
+            }
+            i += 1;
+        }
+    }
+    (i, line)
+}
+
+/// Skip a quoted string body starting just after its opening quote; returns the index after the
+/// closing quote and the new line.
+fn skip_string(c: &[char], mut i: usize, mut line: usize) -> (usize, usize) {
+    let at = |k: usize| c.get(k).copied().unwrap_or('\0');
+    while i < c.len() {
+        match at(i) {
+            '\\' => {
+                // A line continuation (`\` before a newline) still ends a source line.
+                if at(i + 1) == '\n' {
+                    line += 1;
+                }
+                i += 2;
+            }
+            '"' => {
+                i += 1;
+                break;
+            }
+            '\n' => {
+                line += 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    (i, line)
 }
 
 struct RawStart {
