@@ -146,12 +146,13 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     false
 }
 
-/// `consume_key(Modifiers::NONE, key)` without the presses that hold ⇧: egui ignores an extra ⇧
-/// there, but ⇧+letter is the tool key. Reads each event's own modifiers, which synthetic
+/// `consume_key(Modifiers::NONE, key)` without the presses that hold ⇧ or ⌥: egui ignores an
+/// extra ⇧ and ⌥ there, but ⇧+letter is the tool key and Alt+letter opens the menu with that
+/// mnemonic (Alt+H Help, Alt+I Image). Reads each event's own modifiers, which synthetic
 /// (control channel) keys carry without changing the frame's.
 pub(crate) fn consume_unshifted(i: &mut egui::InputState, key: Key) -> bool {
     let before = i.events.len();
-    i.events.retain(|e| !matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && !modifiers.shift && modifiers.matches_logically(Modifiers::NONE)));
+    i.events.retain(|e| !matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && !modifiers.shift && !modifiers.alt && modifiers.matches_logically(Modifiers::NONE)));
     i.events.len() != before
 }
 
@@ -395,6 +396,24 @@ mod tests {
             crate::shortcuts::handle(&mut app, &ctx);
             assert_eq!(app.ui.tool, tool, "{key:?}");
             assert_eq!(app.ui.tool_options.crop_shield, before, "{key:?} leaves Show Cropped Area and Classic Mode alone");
+        }
+    }
+
+    /// Alt+H, Alt+P and Alt+I are not the crop box's H, P and I (Show Cropped Area, Classic Mode,
+    /// Front Image): egui's `consume_key` ignores an extra ⌥, so the plain-key checks must refuse
+    /// it and leave the press for later handlers.
+    #[test]
+    fn alt_letters_are_not_the_crop_box_keys() {
+        for key in [Key::H, Key::P, Key::I] {
+            let mut app = crop_app();
+            let (shield, ratio) = (app.ui.tool_options.crop_shield.clone(), app.ui.tool_options.crop_ratio.clone());
+            let ctx = egui::Context::default();
+            let alt = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::ALT };
+            ctx.input_mut(|i| i.events.push(alt.clone()));
+            assert!(!keys(&mut app, &ctx) && !crate::crop_size::keys(&mut app, &ctx), "{key:?}");
+            assert_eq!(app.ui.tool_options.crop_shield, shield, "{key:?}");
+            assert_eq!(app.ui.tool_options.crop_ratio, ratio, "{key:?}");
+            assert!(ctx.input(|i| i.events.contains(&alt)), "{key:?} is left for later handlers");
         }
     }
 
