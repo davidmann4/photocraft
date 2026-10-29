@@ -178,6 +178,32 @@ fn refreshing_type_layers_refreshes_the_first_snapshot() {
     assert!(snap_cache(&s), "a layer deleted since it opened is refreshed in the snapshot");
 }
 
+/// A layer picked in the first snapshot while the document had moved on is refreshed in the open
+/// document too when, by the time of the refresh (a busy document's retry), Undo has taken it back
+/// to the snapshot: the two share one document, which must not keep the fallback font.
+#[test]
+fn a_layer_picked_in_the_first_snapshot_refreshes_the_open_document_it_is_again() {
+    let mut s = session();
+    let id = LayerId(s.execute("type.create", json!({"text": "Hello", "size": 24})).unwrap()["layer"].as_u64().unwrap());
+    let mut stale = (*s.active().unwrap().doc).clone();
+    let Some(Layer { content: LayerContent::Text(t), .. }) = stale.layer_mut(id) else { panic!("not a type layer") };
+    t.cache = None;
+    s.add_document(stale, None);
+    let doc_id = s.active().unwrap().doc.id;
+    // Picked while the layer was deleted from the open document: only in the snapshot.
+    s.execute("layer.delete", json!({"layer": id.0})).unwrap();
+    let picked = [crate::TypeLayerRef { doc: doc_id, layer: id, first_snapshot: true }];
+    assert!(s.undo());
+    let st = s.active().unwrap();
+    assert!(Arc::ptr_eq(&st.snapshots[0].doc, &st.doc), "Undo is back at the snapshot itself");
+    let rev = st.revision;
+    assert!(s.refresh_type_layers(&picked).is_empty());
+    assert!(text_layer(&s, id.0).cache.is_some(), "the open document has the real font");
+    let st = s.active().unwrap();
+    assert!(Arc::ptr_eq(&st.snapshots[0].doc, &st.doc), "and still shares it with the snapshot");
+    assert!(st.revision > rev);
+}
+
 #[test]
 fn create_renders_and_is_undoable() {
     let mut s = session();
