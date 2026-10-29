@@ -863,7 +863,9 @@ fn release(app: &mut PhotocraftApp, drag: CropDrag) {
     let ok = app.ui.crop_rect.is_some_and(size_ok);
     // A click outside the untouched default frame (no turn) leaves it the default.
     let changed = !matches!(drag, CropDrag::Rotate { from, .. } | CropDrag::TurnImage { from, .. } if from == angle(app))
-        && !matches!(drag, CropDrag::MoveImage { rect, .. } if app.ui.crop_rect == Some(rect));
+        && !matches!(drag, CropDrag::MoveImage { rect, .. } if app.ui.crop_rect == Some(rect))
+        // A press that never moved draws nothing: the frame shown is still the previous one.
+        && !matches!(drag, CropDrag::Draw { anchor, cur, .. } if anchor == cur);
     if ok && changed {
         app.crop.default_frame = false;
     }
@@ -884,6 +886,14 @@ pub fn end_drag(app: &mut PhotocraftApp) {
     release(app, drag);
     crate::crop_mode::sync_frame(app);
     app.ui.tool = tool;
+}
+
+/// [`end_drag`] once another tool is current, except while the pen's eraser end stands in for the
+/// Crop tool (`stylus`): the gesture goes on when the tip comes back.
+pub fn end_drag_on_leave(app: &mut PhotocraftApp) {
+    if app.ui.tool != Tool::Crop && app.stylus.tool_before_eraser != Some(Tool::Crop) {
+        end_drag(app);
+    }
 }
 
 /// On release: the frame state at the press becomes a box Undo step when the gesture changed it.
