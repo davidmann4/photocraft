@@ -52,33 +52,33 @@ impl Session {
     /// unchanged, so this is no history step and leaves a clean document clean. Unknown documents
     /// and layers are skipped. A document a background job is computing from must not move under
     /// it: its layers are returned, to try again later.
-    pub fn refresh_type_layers(&mut self, layers: &[(photocraft_doc::DocId, LayerId)]) -> Vec<(photocraft_doc::DocId, LayerId)> {
+    pub fn refresh_type_layers(&mut self, layers: &[TypeLayerRef]) -> Vec<TypeLayerRef> {
         let mut busy = Vec::new();
         let mut docs: Vec<photocraft_doc::DocId> = Vec::new();
-        for (d, _) in layers {
-            if !docs.contains(d) {
-                docs.push(*d);
+        for l in layers {
+            if !docs.contains(&l.doc) {
+                docs.push(l.doc);
             }
         }
         for doc_id in docs {
-            let mine: Vec<LayerId> = layers.iter().filter(|(d, _)| *d == doc_id).map(|(_, id)| *id).collect();
             if self.job_on(doc_id).is_some() {
-                busy.extend(mine.iter().map(|id| (doc_id, *id)));
+                busy.extend(layers.iter().filter(|l| l.doc == doc_id));
                 continue;
             }
+            let ids = |first: bool| -> Vec<LayerId> { layers.iter().filter(|l| l.doc == doc_id && l.first_snapshot == first).map(|l| l.layer).collect() };
             let Some(st) = self.docs.iter_mut().find(|st| st.doc.id == doc_id) else { continue };
             // The first snapshot is the document as opened (#2966, #6087): it was taken before the
             // font arrived, so its type layers get the same refresh, or returning to it brings the
             // fallback-font pixels back. While it still is the open document, it shares the
-            // refreshed one.
+            // refreshed one; once edited, it is refreshed on its own, layers the edit removed too.
             let first_is_doc = st.snapshots.iter().any(|s| s.id == 0 && Arc::ptr_eq(&s.doc, &st.doc));
             if !first_is_doc
                 && let Some(first) = st.snapshots.iter_mut().find(|s| s.id == 0)
-                && let Some(doc) = refresh_text_layers(&first.doc, &mine)
+                && let Some(doc) = refresh_text_layers(&first.doc, &ids(true))
             {
                 first.doc = Arc::new(doc);
             }
-            let Some(doc) = refresh_text_layers(&st.doc, &mine) else { continue };
+            let Some(doc) = refresh_text_layers(&st.doc, &ids(false)) else { continue };
             let doc = Arc::new(doc);
             if first_is_doc && let Some(first) = st.snapshots.iter_mut().find(|s| s.id == 0) {
                 first.doc = doc.clone();
