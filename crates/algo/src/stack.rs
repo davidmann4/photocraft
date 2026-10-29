@@ -99,11 +99,17 @@ fn stat(v: &mut [f32], s: Stat, scratch: &mut EntropyScratch) -> f32 {
         Stat::Maximum => return v.iter().copied().fold(f32::MIN, f32::max),
         Stat::Range => return v.iter().copied().fold(f32::MIN, f32::max) - v.iter().copied().fold(f32::MAX, f32::min),
         Stat::Median => {
-            // `total_cmp` is a total order whose ties are bit-identical values, so an unstable
-            // sort gives exactly the stable sort's result.
-            v.sort_unstable_by(f32::total_cmp);
             let k = v.len();
-            return if k % 2 == 1 { v[k / 2] } else { (v[k / 2 - 1] + v[k / 2]) / 2.0 };
+            // Nonempty above, so k / 2 is in bounds. Selection puts the upper middle value in
+            // place in O(k); the lower partition need not be sorted. Use the same total order
+            // for its maximum to preserve signed zeros, infinities and NaNs.
+            let (lower, middle, _) = v.select_nth_unstable_by(k / 2, f32::total_cmp);
+            return if k % 2 == 1 {
+                *middle
+            } else {
+                // For even k >= 2 the lower partition contains the other middle value.
+                lower.iter().max_by(|a, b| a.total_cmp(b)).map_or(*middle, |lo| (*lo + *middle) / 2.0)
+            };
         }
         Stat::Entropy => {
             if v.len() < 2 {
