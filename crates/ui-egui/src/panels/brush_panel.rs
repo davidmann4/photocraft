@@ -63,8 +63,6 @@ pub enum BrushesView {
     /// Rows: tip, size, stroke preview, name.
     #[default]
     List,
-    /// The list's rows side by side, as many as fit the panel's width.
-    Columns,
     /// Tip thumbnails with their sizes.
     Grid,
 }
