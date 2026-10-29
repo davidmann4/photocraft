@@ -294,6 +294,43 @@ fn record_explicit_transform_keeps_one_replayable_step() {
     assert_eq!(pixel(&s, 0, 12, 2), vec![0.0; 4]);
 }
 
+#[test]
+fn recorded_single_layer_transform_replays_after_layer_ids_shift() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 20, "height": 8, "background": "transparent"})).unwrap();
+    let source = s.execute("layer.new.layer", json!({"name": "Target"})).unwrap()["layer"].as_u64().unwrap();
+    s.edit("source pixel", |doc, _| {
+        doc.layer_mut(photocraft_doc::LayerId(source)).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 2, 2, 4), &[1.0, 0.0, 0.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+
+    s.execute("actions.record", json!({"name": "Move target"})).unwrap();
+    s.execute("edit.transform", json!({"layer": source, "dx": 4, "interpolation": "nearest"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let recorded = s.execute("actions.get", json!({"action": "Move target"})).unwrap();
+    assert_eq!(recorded["steps"][0][1], json!({"dx": 4, "interpolation": "nearest"}));
+
+    // Add a layer before the target, shifting its id; playback must resolve the current
+    // selection rather than keep the source document's numeric layer id.
+    s.execute("file.new", json!({"width": 20, "height": 8, "background": "transparent"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Inserted"})).unwrap();
+    let target = s.execute("layer.new.layer", json!({"name": "Target"})).unwrap()["layer"].as_u64().unwrap();
+    assert_ne!(source, target);
+    s.edit("target pixel", |doc, _| {
+        doc.layer_mut(photocraft_doc::LayerId(target)).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 2, 2, 4), &[1.0, 0.0, 0.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    let target_index = s.active().unwrap().doc.layers.iter().position(|layer| layer.id.0 == target).unwrap();
+    let before = s.active().unwrap().history.past_len();
+    let played = s.execute("actions.play", json!({"action": "Move target"})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    assert_eq!(s.active().unwrap().history.past_len(), before + 1);
+    assert_eq!(pixel(&s, target_index, 4, 2), vec![1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(pixel(&s, target_index, 0, 2), vec![0.0; 4]);
+}
+
 /// A Background with a red bar and a slanted ruler line, ready for Straighten.
 fn ruled_background(s: &mut Session, depth: u32) {
     s.execute("file.new", json!({"width": 80, "height": 60, "depth": depth})).unwrap();
