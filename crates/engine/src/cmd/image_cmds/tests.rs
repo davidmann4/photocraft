@@ -1008,3 +1008,21 @@ fn duplicate_document() {
     assert_eq!(doc(&s).layers.len(), 1);
     assert!(doc(&s).name.ends_with("copy"));
 }
+
+/// #9212: a bicubic shrink stores the image between its two passes with one axis at its old
+/// size. A Background whose kept pixels reach (69999, 69999), halved from 200 to 100 px, ends at
+/// about 35000 x 35000 px (4.9 GB, within the 8 GiB budget) but passes through about
+/// 35000 x 70000 px (9.8 GB): refused before allocating. Bilinear has one pass and fits. The
+/// check alone runs, so nothing that large is allocated either way.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn hidden_resample_budget_counts_the_image_between_bicubic_passes() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 200, "height": 200})).unwrap();
+    let mut d = doc(&s).clone();
+    let bg = d.background_mut().unwrap().surface_mut().unwrap();
+    bg.fill_rect(Rect::new(69_999, 69_999, 70_000, 70_000), &[1.0, 0.0, 0.0, 1.0]);
+    let err = check_hidden_resample_budget("image.imageSize", &mut d, 0.5, 0.5, Resample::Bicubic).unwrap_err().to_string();
+    assert!(err.contains(" x 70000 px is "), "{err}");
+    check_hidden_resample_budget("image.imageSize", &mut d, 0.5, 0.5, Resample::Bilinear).unwrap();
+}

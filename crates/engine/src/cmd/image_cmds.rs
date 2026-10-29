@@ -3,7 +3,7 @@
 
 use std::convert::Infallible;
 
-use photocraft_algo::resample::{Resample, crop_surface, resize_surface_in_canvas, translate_surface};
+use photocraft_algo::resample::{Resample, crop_surface, largest_resize_rect, resize_surface_in_canvas, scaled_rect, translate_surface};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Effect, Effects, FxPaint, Layer, LayerContent, LayerId, Size};
 use photocraft_geom::Rect;
@@ -297,7 +297,7 @@ pub(crate) fn resample_doc(doc: &mut Document, cmd: &str, nw: u32, nh: u32, filt
     if (sx - 1.0).abs() < 1e-12 && (sy - 1.0).abs() < 1e-12 {
         return Ok(());
     }
-    check_hidden_resample_budget(cmd, doc, sx, sy)?;
+    check_hidden_resample_budget(cmd, doc, sx, sy, filter)?;
     // Content that reaches the canvas edge keeps it: a Background stays opaque to the border.
     let canvas = Rect::from_xywh(0, 0, ow, oh);
     let taken = crate::smart_cmds::take_caches(&mut doc.layers);
@@ -329,23 +329,23 @@ pub(crate) fn resample_doc(doc: &mut Document, cmd: &str, nw: u32, nh: u32, filt
     Ok(())
 }
 
-/// [`check_resample_budget`] for the largest surface [`resample_doc`] scales by `sx` x `sy`: each
-/// keeps its pixels outside the canvas (a crop that didn't delete them, a layer moved off the
-/// canvas), and those grow with the scale like the rest.
-fn check_hidden_resample_budget(cmd: &str, doc: &mut Document, sx: f64, sy: f64) -> Result<()> {
-    let canvas = doc.bounds();
-    // The largest surface by bytes: its scaled width, height and bytes per pixel (a mask has one
+/// [`check_resample_budget`] for the largest surface [`resample_doc`] stores while scaling by
+/// `sx` x `sy` with `filter` (masks, channels and the selection with Bilinear): each keeps its
+/// pixels outside the canvas (a crop that didn't delete them, a layer moved off the canvas), and
+/// those grow with the scale like the rest. A bicubic shrink also stores the image between its
+/// two passes, one axis still at its old size ([`largest_resize_rect`]).
+fn check_hidden_resample_budget(cmd: &str, doc: &mut Document, sx: f64, sy: f64, filter: Resample) -> Result<()> {
+    let new_canvas = scaled_rect(doc.bounds(), sx, sy);
+    // The largest surface by bytes: its width, height and bytes per pixel (a mask has one
     // channel, the layers the document's).
     let mut largest = (0u32, 0u32, 1u64);
-    let mut visit = |surf: &Surface| {
-        let r = surf.content_bounds();
-        // What lies within the canvas scales to within the new canvas, already budgeted.
-        if r.is_empty() || canvas.union(&r) == canvas {
+    let mut visit = |surf: &Surface, filter: Resample| {
+        let r = largest_resize_rect(surf.content_bounds(), sx, sy, filter);
+        // What stays within the new canvas is already budgeted.
+        if r.is_empty() || new_canvas.union(&r) == new_canvas {
             return;
         }
-        // The output's extent, as `resize_surface_in_canvas` lays it out.
-        let side = |a: i32, b: i32, k: f64| ((f64::from(b) * k).ceil() - (f64::from(a) * k).floor()).clamp(0.0, f64::from(u32::MAX)) as u32;
-        let (w, h) = (side(r.x0, r.x1, sx), side(r.y0, r.y1, sy));
+        let (w, h) = (r.width(), r.height());
         let bpp = surf.format().bytes_per_pixel().max(1) as u64;
         let bytes = |(w, h, bpp): (u32, u32, u64)| u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bpp);
         if bytes((w, h, bpp)) > bytes(largest) {
@@ -353,12 +353,12 @@ fn check_hidden_resample_budget(cmd: &str, doc: &mut Document, sx: f64, sy: f64)
         }
     };
     // The surfaces `resample_doc` scales, smart object caches included.
-    for_each_surface(&mut doc.layers, true, &mut |surf, _| visit(surf));
+    for_each_surface(&mut doc.layers, true, &mut |surf, is_mask| visit(surf, if is_mask { Resample::Bilinear } else { filter }));
     for ch in doc.channels.iter().chain(doc.quick_mask.as_ref()) {
-        visit(&ch.surface);
+        visit(&ch.surface, Resample::Bilinear);
     }
     if let Some(sel) = &doc.selection {
-        visit(sel);
+        visit(sel, Resample::Bilinear);
     }
     let (w, h, bpp) = largest;
     let px = u64::from(w).saturating_mul(u64::from(h));
