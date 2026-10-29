@@ -1,5 +1,5 @@
 use super::documents::fix_active;
-use super::*;
+use super::{Arc, DocState, Document, LayerId, LayerTarget, Session, channel_cmds, layer_multi_cmds};
 
 impl Session {
     pub fn undo(&mut self) -> bool {
@@ -75,7 +75,9 @@ impl Session {
             None => false,
         }
     }
+}
 
+impl Session {
     /// Take back the step a compound command just recorded, after its later part failed: the
     /// document before the command is current again, nothing is left to redo, and in non-linear
     /// history the later states that step moved stay where they were (an undo would land on the

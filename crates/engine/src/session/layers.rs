@@ -1,5 +1,6 @@
 use super::history::fix_selection;
-use super::*;
+use super::{Arc, EngineError, LayerId, Result, Session, channel_cmds, layer_multi_cmds, type_cmds};
+use crate::TypeLayerRef;
 
 impl Session {
     /// Replace the active document's active layer without creating a history step.
@@ -84,12 +85,13 @@ impl Session {
                 first.doc = doc.clone();
             }
             let clean = st.saved_revision == st.revision;
-            st.doc = doc;
+            let before = std::mem::replace(&mut st.doc, doc);
             st.revision += 1;
             if clean {
                 st.saved_revision = st.revision;
             }
-            st.last_damage = None;
+            // Only the refreshed layers' caches changed: their changed tiles.
+            st.last_damage = layer_multi_cmds::step_damage(&before, &st.doc);
         }
         busy
     }

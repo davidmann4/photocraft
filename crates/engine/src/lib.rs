@@ -18,12 +18,14 @@ pub mod display_color;
 pub mod doc_path;
 pub mod filters;
 pub mod filters_ext;
+mod group_options;
 pub mod guide_layout;
 pub mod hidden_target;
 pub mod inspect;
 pub mod installed_profiles;
 pub mod jobs;
 pub mod kys;
+pub mod layer_place;
 pub mod layer_style;
 pub mod link_watch;
 pub mod new_layer;
@@ -88,6 +90,7 @@ pub use cmd::file_cmds;
 pub use cmd::fill_cmds;
 pub use cmd::fill_key_cmds;
 pub use cmd::float_cmds;
+pub use cmd::font_library_cmds;
 use cmd::frame_cmds;
 pub use cmd::fx_view_cmds;
 pub use cmd::fx_visibility_cmds;
@@ -252,6 +255,9 @@ pub struct Session {
     /// A further route for File › Print when neither `lp` nor a CUPS server over IPP is
     /// reachable (the XDG Print portal in a Flatpak); see `print_cmds::Spooler`.
     pub print_spooler: Option<print_cmds::Spooler>,
+    /// The printers `file.printers`, `file.print.printers` and the Print dialog list in place of
+    /// the system's (tests); see `print_cmds::PrinterSource`. `None` asks the spooler.
+    pub printer_source: Option<print_cmds::PrinterSource>,
     /// Background jobs (see [`jobs`]).
     jobs: jobs::Jobs,
     /// Color Sampler points dropped by the last canvas-size change (crop, Canvas Size, Image Size,
@@ -281,6 +287,15 @@ pub struct Session {
     /// document, source read-only)`. The shell takes them with [`Session::take_held_open`].
     held_opens: Vec<(u64, Document, bool)>,
     next_held_open: u64,
+    /// The document before the latest [`Session::edit`] of the running command, which
+    /// [`Session::hint_damage`] checks a hint against. Set by `edit`, taken by `hint_damage`,
+    /// dropped when the command ends. Debug and test builds only.
+    #[cfg(any(test, debug_assertions))]
+    hint_before: Option<Arc<Document>>,
+    /// Damage hints that missed a tile their edit changed ([`Session::hint_damage`]): each one a
+    /// command reporting too narrow a redraw area (#4053). Counted in debug and test builds only;
+    /// tests read it.
+    pub damage_misses: usize,
 }
 
 #[cfg(test)]

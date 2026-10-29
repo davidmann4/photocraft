@@ -311,6 +311,7 @@
 	Layer…	Ebene…
 	Group…	Gruppe…
 	Group from Layers…	Gruppe aus Ebenen…
+	New Group from Layers…	Neue Gruppe aus Ebenen…
 	Artboard…	Zeichenbereich…
 	Artboard from Group…	Zeichenbereich aus Gruppe…
 	Artboard from Layers…	Zeichenbereich aus Ebenen…
@@ -1941,7 +1942,7 @@
 	Full size tip	Spitze in voller Größe
 	Gamut warning color	Farbumfang-Warnfarbe
 	Gamut warning opacity	Deckkraft der Farbumfang-Warnung
-	Generator enabled	Generator aktiviert
+	Enable Generator	Generator aktivieren
 	Gif	GIF
 	Glossy	Glänzend
 	Grid color	Rasterfarbe
@@ -3270,6 +3271,33 @@ curves	Smooth	Glätten
 	Automatically Create First Snapshot	Ersten Snapshot automatisch erstellen
 	Automatically Create New Snapshot When Saving	Beim Speichern automatisch neuen Snapshot erstellen
 	Show New Snapshot Dialog by Default	Dialogfeld „Neuer Snapshot“ standardmäßig anzeigen
+	Show Favorite Fonts	Favorisierte Schriften anzeigen
+	No favorite fonts yet: click the star beside a font to add it.	Noch keine favorisierten Schriften: Klicken Sie auf den Stern neben einer Schrift, um sie hinzuzufügen.
+	Favorite fonts	Favorisierte Schriften
+	Add to Favorites	Zu Favoriten hinzufügen
+	Remove from Favorites	Aus Favoriten entfernen
+	Show All Fonts	Alle Schriften anzeigen
+	All Classes	Alle Klassen
+	Blackletter	Gebrochene Schriften
+	Decorative	Dekorativ
+	Font preview:	Schriftvorschau:
+	Handwritten	Handschriftlich
+	Hide Font Classes	Schriftklassen ausblenden
+	Hide Styles	Schnitte ausblenden
+	Monospace	Nichtproportional
+	No fonts match these filters.	Keine Schriften entsprechen diesen Filtern.
+	No similar fonts: the current font doesn't say what it looks like.	Keine ähnlichen Schriften: Die aktuelle Schrift beschreibt ihr Aussehen nicht.
+	OpenType font	OpenType-Schrift
+	Sans Serif	Serifenlos
+	Script	Schreibschrift
+	Serif	Serifen
+	Show Font Classes	Schriftklassen einblenden
+	Show Similar Fonts	Ähnliche Schriften anzeigen
+	Show Styles	Schnitte einblenden
+	Show Variable Fonts	Variable Schriften anzeigen
+	Slab Serif	Serifenbetont
+	TrueType font	TrueType-Schrift
+	Variable font	Variable Schrift
 	Calibration	Kalibrierung
 	Red Primary	Rot-Primärfarbe
 	Green Primary	Grün-Primärfarbe
@@ -3481,3 +3509,6 @@ curves	Smooth	Glätten
 	Interpolation	Interpolation
 	Target	Ziel
 	Units	Einheiten
+	Font size presets	Schriftgrößen-Vorgaben
+	Leading presets	Zeilenabstand-Vorgaben
+	Tracking presets	Laufweiten-Vorgaben
