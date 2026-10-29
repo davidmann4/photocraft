@@ -427,6 +427,14 @@ fn crop_refuses_a_bad_explicit_rect_instead_of_cropping_to_the_selection() {
     s.execute("select.rect", json!({"x": 5, "y": 2, "width": 20, "height": 10})).unwrap();
     s.execute("image.crop", json!({"x": 1.0, "y": 1.0, "width": 30.0, "height": 15.0})).unwrap();
     assert_eq!(doc(&s).size, Size::new(30, 15));
+    // Fractional pixels round, like the rectangle's `x`/`y` and every other pixel param
+    // (`commands::int`); a side that rounds to 0 is refused.
+    let mut s = session();
+    s.execute("image.crop", json!({"x": 0.4, "y": 0.6, "width": 20.6, "height": 9.5})).unwrap();
+    assert_eq!(doc(&s).size, Size::new(21, 10));
+    let err = s.execute("image.crop", json!({"x": 0, "y": 0, "width": 0.4, "height": 5})).unwrap_err();
+    assert!(matches!(err, EngineError::BadParams { .. }), "{err:?}");
+    assert_eq!(doc(&s).size, Size::new(21, 10));
 }
 
 #[test]
