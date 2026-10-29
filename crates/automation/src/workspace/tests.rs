@@ -528,6 +528,8 @@ fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
             | "shape.presets.new"
             | "path.list"
             | "path.info"
+            | "path.addToSelection"
+            | "path.subtractFromSelection"
             | "path.set"
             | "path.transform"
             | "path.moveAnchors"
