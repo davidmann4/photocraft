@@ -15,6 +15,8 @@ use crate::state::{DialogKind, Tool};
 use crate::theme::Tokens;
 
 const MARK: &str = "__createShape";
+/// Set when the dialog was opened in Path mode.
+const PATH_MODE: &str = "__pathMode";
 /// Largest side the dialog accepts, in pixels (Photoshop's document limit).
 const MAX_PX: f64 = 300_000.0;
 /// Remembered values (document pixels; sides and radii come from the options bar).
@@ -71,6 +73,10 @@ pub fn open(app: &mut PhotocraftApp, tool: Tool, at: [f64; 2]) -> Option<u64> {
     f.insert("width".into(), json!(100.0));
     f.insert("height".into(), json!(100.0));
     f.insert("fromCenter".into(), json!(false));
+    // Path mode: OK adds the outline to the work path instead of making a shape layer.
+    if crate::vector_ui::draws_path(o) {
+        f.insert(PATH_MODE.into(), json!(true));
+    }
     match kind {
         "rectangle" => {
             f.insert("radii".into(), json!([r, r, r, r]));
@@ -136,9 +142,18 @@ pub fn geometry(f: &Map<String, Value>) -> Result<Value, String> {
     })
 }
 
-/// OK: create the shape and remember the values for the next click.
+/// OK: create the shape (in Path mode: add its outline to the work path) and remember the values
+/// for the next click.
 pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
-    let result = geometry(f).and_then(|g| crate::vector_ui::create_shape(app, g));
+    let path_mode = f.get(PATH_MODE).and_then(Value::as_bool).unwrap_or(false);
+    let result = geometry(f).and_then(|g| {
+        if path_mode {
+            let outline = photocraft_engine::vector_cmds::shape_path(&g).map_err(|e| e.to_string())?;
+            crate::vector_ui::add_to_work_path(app, outline)
+        } else {
+            crate::vector_ui::create_shape(app, g)
+        }
+    });
     match &result {
         Ok(_) => {
             if let Some(kind) = f.get(MARK).and_then(Value::as_str) {

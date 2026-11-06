@@ -355,24 +355,43 @@ fn right_click_picks_the_unit_of_that_field_only_and_it_is_not_remembered() {
     assert_eq!(shown(&s), [("1.76".to_string(), "cm".to_string()), ("3.53".to_string(), "cm".to_string())]);
 }
 
-/// CodeRabbit on #9456: in Path mode a click opens no Create dialog, whose OK would make a shape
-/// layer; Path mode never draws one (a drag adds its outline to the work path).
+/// The reference application (measured): in Path mode a click still opens Create Rectangle /
+/// Ellipse / …, and OK adds the outline to the work path, at the click and of the dialog's size,
+/// with no new layer. A second click and OK adds a second subpath.
 #[test]
-fn a_path_mode_click_opens_no_create_dialog() {
+fn a_path_mode_click_opens_the_create_dialog_and_ok_adds_to_the_work_path() {
+    let work = |app: &PhotocraftApp| app.session.active().unwrap().doc.work_path.clone();
     for tool in [Tool::Rectangle, Tool::EllipseShape, Tool::Triangle, Tool::Polygon] {
         let mut app = app();
         app.ui.tool_options.shape_mode = "path".into();
         let before = layers(&app);
         press(&mut app, tool, [20.4, 30.2], [20.4, 30.2]);
-        assert!(app.ui.dialogs.is_empty(), "{tool:?}: no Create dialog in Path mode");
-        assert_eq!(layers(&app), before, "{tool:?}: and no layer");
+        let id = only_dialog(&app);
+        assert!(work(&app).is_none(), "{tool:?}: nothing before OK");
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        assert_eq!(layers(&app), before, "{tool:?}: no layer in Path mode");
+        let path = work(&app).unwrap_or_else(|| panic!("{tool:?}: OK makes a work path"));
+        assert_eq!(path.subpaths.len(), 1, "{tool:?}");
+        // In the dialog's 100 x 100 box at the click; a rectangle fills it exactly.
+        let (x0, y0, x1, y1) = path.control_bounds().unwrap();
+        let inside = x0 >= 19.4 && y0 >= 29.4 && x1 <= 120.6 && y1 <= 130.6 && x1 - x0 > 50.0 && y1 - y0 > 50.0;
+        assert!(inside, "{tool:?}: in the box at the click, {:?}", (x0, y0, x1, y1));
+        if tool == Tool::Rectangle {
+            assert_eq!((x0, y0, x1, y1), (20.0, 30.0, 120.0, 130.0));
+        }
+        assert_eq!(app.ui.selected_path.as_deref(), Some("work"), "{tool:?}: the work path is selected");
+        press(&mut app, tool, [200.0, 200.0], [200.0, 200.0]);
+        let id = only_dialog(&app);
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        assert_eq!(work(&app).unwrap().subpaths.len(), 2, "{tool:?}: the next OK adds a subpath");
+        assert_eq!(layers(&app), before, "{tool:?}: still no layer");
     }
 }
 
-/// CodeRabbit on #9456: a Path-mode click that moved a little, still within the click slop, adds
-/// nothing to the work path either. Its box would round to a 1 × 1 or 2 × 2 px outline.
+/// Cancel in a Path-mode Create dialog adds nothing; a Path-mode click (one that moved a little,
+/// within the click slop, too) of a tool without that dialog adds no speck of a subpath.
 #[test]
-fn a_path_mode_click_that_moved_a_little_adds_no_subpath() {
+fn a_path_mode_click_adds_nothing_without_ok() {
     let work = |app: &PhotocraftApp| app.session.active().unwrap().doc.work_path.as_ref().map_or(0, |p| p.subpaths.len());
     for tool in [Tool::Rectangle, Tool::EllipseShape, Tool::Triangle, Tool::Polygon, Tool::Line] {
         for end in [[20.8, 30.8], [21.8, 31.9]] {
@@ -380,8 +399,13 @@ fn a_path_mode_click_that_moved_a_little_adds_no_subpath() {
             app.ui.tool_options.shape_mode = "path".into();
             let before = layers(&app);
             press(&mut app, tool, [20.2, 30.2], end);
+            if tool == Tool::Line {
+                assert!(app.ui.dialogs.is_empty(), "{tool:?} to {end:?}: Line has no Create dialog");
+            } else {
+                let id = only_dialog(&app);
+                crate::dialogs::cancel(&mut app, id).unwrap();
+            }
             assert_eq!(work(&app), 0, "{tool:?} to {end:?}: no subpath");
-            assert!(app.ui.dialogs.is_empty(), "{tool:?} to {end:?}: no Create dialog");
             assert_eq!(layers(&app), before, "{tool:?} to {end:?}: and no layer");
         }
     }

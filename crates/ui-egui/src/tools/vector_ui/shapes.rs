@@ -103,23 +103,9 @@ pub fn finish_shape(app: &mut PhotocraftApp, tool: Tool, start: [f64; 2], end: [
     if draws_path(&app.ui.tool_options) {
         // Path mode: the outline joins the work path (one more subpath), and no layer is made.
         let Some(outline) = shape_outline(app, tool, start, end, mods) else { return };
-        // Appended here rather than with `path.set`'s `op`, which would turn a custom shape's
-        // subtracted subpaths (holes) into combined ones; the shape goes in as one component.
-        // A new work path takes the outline's fill rule.
-        let mut path = app
-            .session
-            .active()
-            .and_then(|st| st.doc.work_path.clone())
-            .unwrap_or_else(|| photocraft_doc::vector::Path { fill_rule: outline.fill_rule, ..Default::default() });
-        let outline = as_one_component(&outline, path.fill_rule).unwrap_or(outline);
-        path.subpaths.extend(outline.subpaths);
-        let r = app.run("path.set", json!({"name": "work", "path": photocraft_engine::vector_cmds::path_json(&path)}));
-        match r {
-            Ok(_) => app.ui.selected_path = Some("work".into()),
-            Err(e) => {
-                app.ui.status = e;
-                app.ui.status_error = true;
-            }
+        if let Err(e) = add_to_work_path(app, outline) {
+            app.ui.status = e;
+            app.ui.status_error = true;
         }
         return;
     }
@@ -148,6 +134,25 @@ pub fn create_shape(app: &mut PhotocraftApp, mut geometry: Value) -> Result<Valu
     geometry["fill"] = fill_param(app);
     geometry["stroke"] = stroke_param(app);
     app.run("shape.create", geometry)
+}
+
+/// Path mode: add `outline` to the work path as one more component (a new work path when there is
+/// none) and select it; no layer is made. A drag in Path mode, and OK in a Create Rectangle /
+/// Ellipse / … dialog opened by a Path-mode click.
+pub fn add_to_work_path(app: &mut PhotocraftApp, outline: photocraft_doc::vector::Path) -> Result<Value, String> {
+    // Appended here rather than with `path.set`'s `op`, which would turn a custom shape's
+    // subtracted subpaths (holes) into combined ones; the shape goes in as one component.
+    // A new work path takes the outline's fill rule.
+    let mut path = app
+        .session
+        .active()
+        .and_then(|st| st.doc.work_path.clone())
+        .unwrap_or_else(|| photocraft_doc::vector::Path { fill_rule: outline.fill_rule, ..Default::default() });
+    let outline = as_one_component(&outline, path.fill_rule).unwrap_or(outline);
+    path.subpaths.extend(outline.subpaths);
+    let r = app.run("path.set", json!({"name": "work", "path": photocraft_engine::vector_cmds::path_json(&path)}))?;
+    app.ui.selected_path = Some("work".into());
+    Ok(r)
 }
 
 /// A custom shape as one shape component, the way Photoshop adds it to a path: the subpaths
