@@ -11,7 +11,7 @@ use super::{FamilyTool, ToolScope};
 use crate::PhotocraftApp;
 use crate::canvas::document_display::CanvasHost;
 use crate::state::Tool;
-use craft::behavior::geometry::{ConstrainStyle, Directions, MoveGesture};
+use craft::behavior::geometry::{ConstrainStyle, Directions, MoveGesture, SnapKinds};
 use craft::behavior::kurbo::{self, Point};
 use craft::behavior::{CancelReason, Cursor, CursorIcon, PaintedCursor, PointerGlyph};
 use craft::keymap::{Chord, Key, Mods};
@@ -267,6 +267,24 @@ fn press_at(app: &mut PhotocraftApp, p: [f64; 2], mods: Mods, style: ConstrainSt
     (ToolAction::Claimed, Some(run))
 }
 
+/// How far apart two coordinates may be and still line up exactly: the moved box sits on whole pixels.
+const EXACT: f64 = 1e-6;
+
+/// With View › Snap off and Smart Guides on, the smart guides of the edges and centres of `moved` (the box at the
+/// offset the drag commits) that line up exactly with another layer's, as in the reference application: nothing
+/// pulls, the line only marks the coincidence (#16857). Snap on draws its lines through `snap_rect`; Smart Guides off
+/// or the suspend key held draws none.
+fn exact_lines(app: &PhotocraftApp, cx: &mut ToolContext<'_>, moved: kurbo::Rect, mods: Mods) {
+    let Some(idx) = app.session.active_index() else { return };
+    let options = crate::canvas::snap_ui::snap(app, idx).options();
+    if options.on || !options.smart_guides || craft::ui::canvas::snap_suspended(mods, craft::keymap::Platform::current(), options.suspend, false) {
+        return;
+    }
+    let targets = crate::canvas::snap_ui::targets(app, idx, &crate::canvas::snap_ui::moving_set(app));
+    let (_, lines) = targets.snap_rect_of(moved, EXACT, SnapKinds::ALL);
+    cx.add_snapped(lines);
+}
+
 /// The drag to `pointer`: the ⇧ lock, the snap of the moving box, the ⌥ duplicate and, while the button is down
 /// (`readout`), the readout; the release applies its last sample without one.
 /// A pass applies only its own pointer sample, so a second pass of a frame moves the offset to
@@ -293,6 +311,10 @@ fn follow(run: &mut Run, app: &mut PhotocraftApp, pointer: &ToolPointer, cx: &mu
     run.offset = (dx, dy);
     run.delta = [f64::from(dx), f64::from(dy)];
     run.moved = true;
+    if let Some(b) = run.box_rect {
+        let moved = kurbo::Rect::new(b[0], b[1], b[2], b[3]) + kurbo::Vec2::new(run.delta[0], run.delta[1]);
+        exact_lines(app, cx, moved, pointer.mods);
+    }
     if readout {
         let x_arrow = if dx < 0 { "←" } else { "→" };
         let y_arrow = if dy < 0 { "↑" } else { "↓" };
@@ -466,3 +488,6 @@ impl CanvasTool for MoveRun<'_> {
 #[cfg(test)]
 #[path = "move_cursor_cross_tests.rs"]
 mod move_cursor_cross_tests;
+#[cfg(test)]
+#[path = "../snap_off_lines_tests.rs"]
+mod snap_off_lines_tests;
