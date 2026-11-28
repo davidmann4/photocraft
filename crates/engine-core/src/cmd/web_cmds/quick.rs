@@ -119,6 +119,10 @@ pub(super) fn quick_export(s: &mut Session, p: &Value) -> Result<Value> {
             // Keeping quality absent preserves the historical lossless Quick Export behavior.
             let st = WebSettings::from_params(&Value::Object(o.clone()), cmd)?;
             let (mut wdoc, _, _) = web_document(&doc, &json!({}), &st)?;
+            if !st.convert_to_srgb && doc.icc_profile.is_none() && doc.mode == photocraft_doc::ColorMode::Rgb {
+                // The regular WebP writer embeds ICC by default; do not let it guess sRGB.
+                wdoc.icc_profile = Some(crate::color_cmds::export_working_profile(s, doc.mode)?.to_bytes());
+            }
             // The regular exporter embeds the document's XMP and EXIF as they are: give it only
             // what the metadata choice keeps, as the Save for Web formats get.
             wdoc.metadata.xmp = web_xmp(&doc, st.metadata).map(std::sync::Arc::from);

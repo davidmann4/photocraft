@@ -3811,3 +3811,79 @@ fn anti_aliased_inner_shadow_gated_neighbours_match_the_cpu() {
             .unwrap_or_else(|e| panic!("{e}"));
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// #14881: the Drop Shadow's Anti-aliased checkbox has to reach the GPU map program too.
+
+/// The #14881 test document: the #14934 canvas and orange rectangle under a black Multiply Drop
+/// Shadow (Global Light 120 / 30, Noise 0, Contour Gaussian) with Size, Spread, Distance and
+/// Anti-aliased as given.
+fn drop_shadow_doc(size: f32, spread: f32, distance: f32, anti_aliased: bool) -> Document {
+    let mut d = inner_shadow_doc(size, spread, distance, anti_aliased);
+    if let Some(px) = d.layers.get_mut(1) {
+        px.effects.items = vec![Effect::DropShadow(Shadow {
+            common: FxCommon::new(BlendMode::Multiply, 1.0),
+            color: Color::BLACK,
+            angle: 120.0,
+            use_global_light: true,
+            distance,
+            spread,
+            size,
+            contour: gaussian_contour(),
+            anti_alias: anti_aliased,
+            noise: 0.0,
+            knocks_out: false,
+        })];
+    }
+    d
+}
+
+/// The nine R levels outwards from each of the issue's four edges of a 400 x 300 flatten.
+fn drop_shadow_ramps(px: &[[f32; 4]]) -> [Vec<f32>; 4] {
+    let r = |x: i32, y: i32| px[(y * 400 + x) as usize][0] * 255.0;
+    let line = |first: (i32, i32), step: (i32, i32)| (0..9).map(|k| r(first.0 + k * step.0, first.1 + k * step.1)).collect();
+    [line((200, 74), (0, -1)), line((99, 150), (-1, 0)), line((200, 225), (0, 1)), line((300, 150), (1, 0))]
+}
+
+/// Done when (#14881): CPU and GPU agree with Anti-aliased on and off (whole-texture and paged
+/// 256 px compositors), and the GPU's own ramps land on the measured profiles within 3 levels:
+/// 98 147 191 223 241 249 252 254 255 at the top and left, 130 177 214 236 247 252 254 254 255 at
+/// the bottom and right, while the flag off keeps the measured 114 163 205 231 244 251 253 254 255.
+#[test]
+fn anti_aliased_drop_shadow_matches_the_cpu_ramps() {
+    let Some(mut g) = gpu() else { return };
+    let gpu_on = check_full(&mut g, &drop_shadow_doc(10.0, 0.0, 0.0, true), "#14881 drop shadow, Anti-aliased").whole;
+    let gpu_off = check_full(&mut g, &drop_shadow_doc(10.0, 0.0, 0.0, false), "#14881 drop shadow, Anti-aliased off").whole;
+    let tl: &[f32] = &[98.0, 147.0, 191.0, 223.0, 241.0, 249.0, 252.0, 254.0, 255.0];
+    let br: &[f32] = &[130.0, 177.0, 214.0, 236.0, 247.0, 252.0, 254.0, 254.0, 255.0];
+    let plain: &[f32] = &[114.0, 163.0, 205.0, 231.0, 244.0, 251.0, 253.0, 254.0, 255.0];
+    for (px, wants, what) in [(&gpu_on, [tl, tl, br, br], "on"), (&gpu_off, [plain; 4], "off")] {
+        for ((side, got), want) in ["top", "left", "bottom", "right"].iter().zip(drop_shadow_ramps(px)).zip(wants) {
+            for (d, (got, want)) in got.iter().zip(want).enumerate() {
+                assert!((got - want).abs() <= 3.0, "GPU {side} edge, Anti-aliased {what}, {d} px out: {got:.1} vs measured {want}");
+            }
+        }
+    }
+}
+
+/// The gate's neighbours (#14881): Size 1, Size 2 at Spread 50 % and every Spread that dilates
+/// take no offset, Size 2 / Spread 4 % / Distance 5 at Spread 0 take it; both compositors must
+/// agree on each, plain and paged.
+#[test]
+fn anti_aliased_drop_shadow_gated_neighbours_match_the_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let around = Rect::new(80, 55, 320, 245);
+    for (size, spread, distance, what) in [
+        (10.0, 0.5, 0.0, "Size 10 Spread 50 %"),
+        (10.0, 0.05, 0.0, "Size 10 Spread 5 %"),
+        (2.0, 0.5, 0.0, "Size 2 Spread 50 %"),
+        (1.0, 0.0, 0.0, "Size 1"),
+        (2.0, 0.0, 0.0, "Size 2 Spread 0 (offset on)"),
+        (10.0, 0.04, 0.0, "Size 10 Spread 4 % (dilates nothing, offset on)"),
+        (10.0, 0.0, 5.0, "Size 10 Spread 0 at Distance 5 (offset on)"),
+        (10.0, 0.5, 5.0, "Size 10 Spread 50 % at Distance 5 (gated)"),
+    ] {
+        diff_rect(&mut g, &drop_shadow_doc(size, spread, distance, true), around, &format!("#14881 drop shadow, {what}, Anti-aliased"))
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+}

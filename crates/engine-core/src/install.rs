@@ -188,6 +188,7 @@ pub fn register(install: &mut Install) {
 
     // files
     hooks.request_params.push(crate::file_cmds::batch_open_params);
+    hooks.check_params.push(crate::color_cmds::check_export_working_profile);
     hooks.after_command.push(|s, id, _| crate::automate_cmds::after_command(s, id));
     hooks.step_recorded.push(crate::actions_cmds::note_step_origin);
     hooks.flush_recording.push(crate::actions_cmds::flush_recording);

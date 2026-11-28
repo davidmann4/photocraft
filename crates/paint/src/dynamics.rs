@@ -642,6 +642,10 @@ impl DabBuilder {
             1
         };
         let base_d = base_diameter(b, s);
+        // A zero Size Fade ends the stroke; pressure, jitter and other fades keep their floors.
+        if sd.enabled && sd.size.control == Control::Fade && sd.size.minimum <= 0.0 && base_d <= 0.0 {
+            return;
+        }
         for _ in 0..count {
             let i = self.next_index;
             self.next_index += 1;

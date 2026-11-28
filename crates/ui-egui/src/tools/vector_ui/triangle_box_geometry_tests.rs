@@ -73,3 +73,18 @@ fn the_dialog_and_the_drag_send_the_same_triangle() {
     assert_eq!(a["live"], b["live"]);
     assert_eq!(anchors(&a), [(450.0, 300.0), (500.0, 400.0), (400.0, 400.0)]);
 }
+
+#[test]
+fn a_rounded_triangle_keeps_its_corner_radius() {
+    use craft::draw::geometry::ShapeGeometry;
+    use photocraft_doc::{LayerContent, vector::LiveShape};
+    for radius in [0.0, 12.0] {
+        let mut app = app(800, 600);
+        let geometry = ShapeGeometry::Triangle { rect: craft::behavior::kurbo::Rect::new(400.0, 300.0, 600.0, 400.0), corner_radius: radius };
+        super::shapes::create_geometry(&mut app, &geometry, super::shapes::kind_of(Tool::Triangle), None).unwrap();
+        let st = app.session.active().unwrap();
+        let LayerContent::Shape(shape) = &st.doc.layer(st.active_layer.unwrap()).unwrap().content else { panic!("expected a shape layer") };
+        let Some(LiveShape::Triangle { corner_radius, .. }) = &shape.live else { panic!("expected a live triangle") };
+        assert_eq!(*corner_radius, radius, "the drag's corner radius reaches the triangle");
+    }
+}

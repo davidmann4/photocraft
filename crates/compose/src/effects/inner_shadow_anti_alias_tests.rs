@@ -188,15 +188,16 @@ fn anti_aliased_still_paints_nothing_outside_the_layer() {
 }
 
 /// Not measured: Anti-aliased with a contour other than Gaussian. Those keep today's map
-/// bit-for-bit - the Linear default, a second built-in curve, and the Drop Shadow (its own item is
-/// #14881). Hashes are the ones these maps had on upstream/main before the change.
+/// bit-for-bit - the Linear default and a second built-in curve. Hashes are the ones these maps had
+/// on upstream/main before the change. The Drop Shadow's off path is pinned here too; with the flag
+/// on it takes the same offset since #14881 (`drop_shadow_anti_alias_tests`).
 #[test]
-fn other_contours_and_the_drop_shadow_keep_todays_map() {
+fn other_contours_keep_todays_map() {
     assert_eq!(bit_hash(&map(10.0, 0.0, 0.0, 0.0, Contour::Linear, true)), 0x2200_2b2d_61bc_9c2d, "a Linear-contour inner shadow with Anti-aliased moved");
     assert_eq!(bit_hash(&map(10.0, 0.0, 0.0, 0.0, cone(), true)), 0xb86c_68a7_8a2f_e689, "a Cone-contour inner shadow with Anti-aliased moved");
     let drop = |aa: bool| shadow_map(&document_shape(), &shadow(10.0, 0.0, 0.0, 0.0, gaussian(), aa), &GlobalLight::default(), false, (0, 0));
     assert_eq!(bit_hash(&drop(false)), 0x5e49_20b6_9751_cc45, "the Drop Shadow Gaussian map (Anti-aliased off) moved");
-    assert_eq!(bit_hash(&drop(true)), 0x5e49_20b6_9751_cc45, "the Drop Shadow still ignores Anti-aliased (#14881)");
+    assert_ne!(bit_hash(&drop(true)), 0x5e49_20b6_9751_cc45, "the Drop Shadow honours Anti-aliased since #14881");
 }
 
 /// The flag off leaves every other Size, Distance and Choke exactly as it was. These are the whole

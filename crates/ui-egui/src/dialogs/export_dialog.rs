@@ -541,6 +541,15 @@ fn export_document(doc: &Document, f: &Map<String, Value>, max_side: Option<u32>
     session.active().map(|d| (*d.doc).clone()).ok_or_else(|| "export failed".into())
 }
 
+/// Materialize the source interpretation only on the copy handed to an encoder.
+fn export_for_encoding(doc: &Document, f: &Map<String, Value>, max_side: Option<u32>, source_profile: &Profile) -> Result<Document, String> {
+    let mut out = export_document(doc, f, max_side, source_profile)?;
+    if settings(f).embed_icc && out.icc_profile.is_none() && matches!(out.mode, ColorMode::Rgb | ColorMode::Grayscale) {
+        out.icc_profile = Some(source_profile.to_bytes());
+    }
+    Ok(out)
+}
+
 /// The exported pixel size: each side scaled and rounded on its own, never below 1 px. The
 /// dialog's size label and `export_document` share it so the label names the file's real size.
 fn scaled_size(w: f64, h: f64, scale: f64) -> (f64, f64) {
@@ -630,7 +639,7 @@ fn settings(f: &Map<String, Value>) -> ExportSettings {
 /// The preview and size estimate share a single reduced document. Resizing every layer twice is
 /// especially expensive for layered PSDs, even when the canvas itself is small.
 fn preview_proxy(doc: &Document, f: &Map<String, Value>, source_profile: &Profile) -> Result<Document, String> {
-    export_document(doc, f, Some(if s_fmt(f) == "ico" { 256 } else { 512 }), source_profile)
+    export_for_encoding(doc, f, Some(if s_fmt(f) == "ico" { 256 } else { 512 }), source_profile)
 }
 
 fn scaled_estimate(bytes: usize, doc: &Document, proxy: &Document, f: &Map<String, Value>) -> u64 {
@@ -750,7 +759,7 @@ fn exact_estimate(doc: &Document, f: &Map<String, Value>, source_profile: &Profi
     if !px.is_finite() || px > EXACT_ESTIMATE_PX {
         return None;
     }
-    let full = export_document(doc, f, None, source_profile).ok()?;
+    let full = export_for_encoding(doc, f, None, source_profile).ok()?;
     let bytes = photocraft_io::export(&full, &format!("estimate.{}", s_fmt(f)), &settings(f).io_options()).ok()?.bytes;
     u64::try_from(bytes.len()).ok()
 }
@@ -1139,7 +1148,7 @@ fn export_sizes(app: &mut PhotocraftApp, f: &Map<String, Value>, rows: &[ScaleRo
 
 /// Exports `doc` to `path` with the dialog settings `f` (Export As, and its replayed action step).
 fn write_export(app: &mut PhotocraftApp, doc: &Document, f: &Map<String, Value>, path: &str, source_profile: &Profile) -> Result<Value, String> {
-    let out = export_document(doc, f, None, source_profile)?;
+    let out = export_for_encoding(doc, f, None, source_profile)?;
     crate::app::ensure_memory_to_save(&out, path)?;
     let export = app.services.export.as_ref().ok_or("no exporter configured")?;
     let (bytes, warnings) = export(&out, path, &settings(f))?;
@@ -1214,7 +1223,7 @@ fn write_layer_file(
     source_profile: &Profile,
     path: &str,
 ) -> Result<Value, String> {
-    let out = export_document(doc, f, None, source_profile)?;
+    let out = export_for_encoding(doc, f, None, source_profile)?;
     crate::app::ensure_memory_to_save(&out, path)?;
     let export = app.services.export.as_ref().ok_or("no exporter configured")?;
     let (bytes, warnings) = export(&out, path, settings)?;
@@ -1317,6 +1326,8 @@ mod preserve_details_tests;
 mod srgb_default_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod working_profile_tests;
 
 #[cfg(test)]
 mod jpg_progressive_tests;
