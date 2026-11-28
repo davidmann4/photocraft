@@ -496,13 +496,13 @@ fn mask_and_frame_drops_follow_the_targets() {
         assert_eq!(layer(&app, masked).mask.is_some(), copy, "copy: {copy}: the original stays only with ⌥");
     }
 
-    // The panel offers no drop of a layer mask on a row that has one, or on its own row.
+    // A layer mask dropped on a row that has one asks "Replace Layer Mask?" (#16787); its own row refuses it.
     let (mut s, masked, shape) = session();
     s.execute("layer.layerMask.hideAll", json!({"layer": shape})).unwrap();
     let app = app_of(s);
     let st = app.session.active().unwrap();
     let tree = PhotoLayers::new(&app, st, &app.ui.layer_filter, false, None);
-    assert!(!tree.accepts_mask_drop(&LayerId(masked), LayerPart::LayerMask, &LayerId(shape)), "onto a masked row");
+    assert!(tree.accepts_mask_drop(&LayerId(masked), LayerPart::LayerMask, &LayerId(shape)), "onto a masked row");
     assert!(!tree.accepts_mask_drop(&LayerId(masked), LayerPart::LayerMask, &LayerId(masked)), "onto its own row");
 
     // A layer dropped into a frame becomes its content.
