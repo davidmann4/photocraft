@@ -787,12 +787,8 @@ pub(crate) fn check_export_working_profile(s: &Session, id: &str, p: &Value) -> 
         }
         "file.export.quickExport" if doc.mode == ColorMode::Rgb => {
             let prefs = s.prefs().export.clone();
-            let path = p
-                .get("path")
-                .and_then(Value::as_str)
-                .filter(|path| !path.is_empty())
-                .map(str::to_owned)
-                .or_else(|| crate::web_cmds::quick_export_target(s));
+            let path =
+                p.get("path").and_then(Value::as_str).filter(|path| !path.is_empty()).map(str::to_owned).or_else(|| crate::web_cmds::quick_export_target(s));
             let format = path.map(|path| {
                 crate::file_cmds::extension(&path).unwrap_or_else(|| {
                     serde_json::to_value(prefs.quick_export_format).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default()
