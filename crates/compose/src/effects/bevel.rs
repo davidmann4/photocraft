@@ -270,8 +270,12 @@ pub fn satin_distance(s: &photocraft_doc::effects::Satin) -> f32 {
 
 pub(super) fn satin_map(shape: &Map, s: &photocraft_doc::effects::Satin) -> Map {
     let (dx, dy) = offset(s.angle, satin_distance(s));
-    let mut a = shape.shifted(dx, dy, 0.0);
-    let mut b = shape.shifted(-dx, -dy, 0.0);
+    // #14984: an Anti-aliased Satin takes both copies from the shape a third of a pixel towards
+    // the top-left (`satin_aa_shift`): the pattern moves, its Distance does not. The final clip
+    // below stays on the layer's own shape.
+    let aa = super::paint::satin_aa_shift(s.anti_alias, &s.contour, s.size);
+    let mut a = shape.shifted(dx + aa, dy + aa, 0.0);
+    let mut b = shape.shifted(-dx + aa, -dy + aa, 0.0);
     if s.size == 1.0 {
         // #14983: the measured edge has one quarter-strength pixel on either side.
         super::blur::size_one_blur(&mut a);

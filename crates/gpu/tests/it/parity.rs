@@ -3671,6 +3671,98 @@ fn sibling_compositors_have_independent_residency_and_configuration() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// #14984: the Satin's Anti-aliased checkbox has to reach the GPU map program too.
+
+/// The Ring contour as the built-in preset carries it - one of the two contours #14984 measures.
+fn ring_contour() -> Contour {
+    let pts: [(f32, f32); 25] = [
+        (0.0, 0.0),
+        (0.031, 0.078),
+        (0.039, 0.117),
+        (0.117, 0.383),
+        (0.172, 0.609),
+        (0.195, 0.734),
+        (0.266, 0.953),
+        (0.305, 1.0),
+        (0.344, 0.992),
+        (0.383, 0.922),
+        (0.43, 0.805),
+        (0.477, 0.641),
+        (0.57, 0.281),
+        (0.617, 0.141),
+        (0.664, 0.055),
+        (0.703, 0.016),
+        (0.742, 0.016),
+        (0.773, 0.062),
+        (0.836, 0.234),
+        (0.859, 0.344),
+        (0.891, 0.445),
+        (0.914, 0.547),
+        (0.945, 0.734),
+        (0.977, 0.875),
+        (1.0, 1.0),
+    ];
+    Contour::Custom {
+        name: "Ring".into(),
+        points: pts.iter().map(|(input, output)| Cp { input: *input, output: *output }).collect(),
+        corners: (0..pts.len()).map(|i| i > 0 && i < pts.len() - 1).collect(),
+    }
+}
+
+/// The #14984 test document: the #14934 canvas and orange rectangle under a black Normal Satin
+/// (Opacity 100 %, Invert off) with the Angle, Distance, Size, contour and Anti-aliased as given.
+fn satin_doc(angle: f32, distance: f32, size: f32, contour: Contour, anti_aliased: bool) -> Document {
+    let mut d = inner_shadow_doc(10.0, 0.0, 0.0, false);
+    if let Some(px) = d.layers.get_mut(1) {
+        px.effects.items = vec![Effect::Satin(Satin {
+            common: FxCommon::new(BlendMode::Normal, 1.0),
+            color: Color::BLACK,
+            angle,
+            distance,
+            size,
+            contour,
+            anti_alias: anti_aliased,
+            invert: false,
+        })];
+    }
+    d
+}
+
+/// Done when (#14984): CPU and GPU agree on the issue's document with Gaussian and Ring, Anti-aliased
+/// on and off (whole-texture and paged 256 px compositors), and the GPU's column x 200 lands on the
+/// issue's tables within 3 levels at y 91, a row the flag moves: Gaussian 16 on and 13 off, Ring
+/// 112 on and 102 off.
+#[test]
+fn anti_aliased_satin_matches_the_cpu() {
+    let Some(mut g) = gpu() else { return };
+    for (name, contour, on, off) in [("Gaussian", gaussian_contour(), 16.0, 13.0), ("Ring", ring_contour(), 112.0, 102.0)] {
+        for (aa, want) in [(true, on), (false, off)] {
+            let px = check_full(&mut g, &satin_doc(90.0, 20.0, 10.0, contour.clone(), aa), &format!("#14984 satin, {name}, Anti-aliased {aa}")).whole;
+            let got = px[91 * 400 + 200][1] * 255.0;
+            assert!((got - want).abs() <= 3.0, "GPU {name} satin, Anti-aliased {aa}, at (200, 91): G {got:.1} vs measured {want}");
+        }
+    }
+}
+
+/// The gate's neighbours (#14984): Linear and Size 1 take no offset, other Sizes, Distances and
+/// Angles take it; both compositors must agree on each, plain and paged.
+#[test]
+fn anti_aliased_satin_neighbours_match_the_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let shape = Rect::new(96, 71, 304, 229);
+    for (angle, distance, size, contour, what) in [
+        (90.0, 20.0, 10.0, Contour::Linear, "Linear"),
+        (90.0, 20.0, 1.0, gaussian_contour(), "Size 1 Gaussian"),
+        (90.0, 20.0, 3.0, gaussian_contour(), "Size 3 Gaussian"),
+        (45.0, 50.0, 10.0, ring_contour(), "Angle 45 Distance 50 Ring"),
+        (-30.0, 7.0, 25.0, gaussian_contour(), "Angle -30 Distance 7 Size 25 Gaussian"),
+    ] {
+        diff_rect(&mut g, &satin_doc(angle, distance, size, contour, true), shape, &format!("#14984 satin, {what}, Anti-aliased"))
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // #14934: the Inner Shadow's Anti-aliased checkbox has to reach the GPU map program too.
 
 /// The Gaussian contour as the built-in preset carries it - the contour #14934 measures with.

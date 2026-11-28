@@ -90,9 +90,11 @@ impl B {
         // satin_map
         let (dx, dy) = offset(s.angle, fx::satin_distance(s));
         let kernel = if s.size == 1.0 { fx::size_one_kernel() } else { fx::tent_kernel(s.size) };
-        let a = self.shift(In::Shape, dx, dy, 0.0, false);
+        // #14984: the CPU's Anti-aliased sub-pixel offset on both copies, on the CPU's gate.
+        let aa = fx::satin_aa_shift(s.anti_alias, &s.contour, s.size);
+        let a = self.shift(In::Shape, dx + aa, dy + aa, 0.0, false);
         let a = self.conv(a, kernel.clone());
-        let c = self.shift(In::Shape, -dx, -dy, 0.0, false);
+        let c = self.shift(In::Shape, -dx + aa, -dy + aa, 0.0, false);
         let c = self.conv(c, kernel);
         self.finish_lut(a, Some(c), s.invert, fx::satin_lut(&s.contour), true, 0);
         1
