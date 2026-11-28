@@ -74,6 +74,7 @@ pub use params::nums;
 pub use params::op_from;
 pub use params::pt;
 pub use params::{parse_path, parse_stroke, path_json};
+pub use paths::PEN_STEP_NAMES;
 pub use paths::STROKE_PATH_TOOLS;
 pub use paths::is_work;
 pub use paths::path_mut;
@@ -87,8 +88,8 @@ use shape::{
     can_paste_shape_fill, can_paste_shape_stroke, combine_shapes, copy_shape_fill, copy_shape_stroke, has_shape_fill, has_shape_stroke, merge_components,
     paste_shape_fill, paste_shape_stroke, path_to_shape, selection_to_shape, shape_create, shape_edit, shape_info, shape_rasterize,
 };
+pub use shape::{line_frame_scale, line_frame_size, preview_shape_stroke, refresh_shape, shape_path, transform_shape, translate_vectors};
 pub(crate) use shape::{map_path, map_shape, shift_shape, translate_vectors_wrapped};
-pub use shape::{preview_shape_stroke, refresh_shape, shape_path, transform_shape, translate_vectors};
 use vector_mask::{toggle_vector_mask, vector_mask_add, vector_mask_delete, vector_mask_edit, vector_mask_info, vector_mask_rasterize, with};
 
 pub fn leak(s: String) -> &'static str {
