@@ -155,7 +155,7 @@ fn snapped(geometry: &ShapeGeometry, keep_angle: bool, whole: bool) -> Option<Sh
     Some(match geometry {
         ShapeGeometry::Rect { rect, radii } => ShapeGeometry::Rect { rect: whole_box(rect, whole)?, radii: *radii },
         ShapeGeometry::Ellipse { rect } => ShapeGeometry::Ellipse { rect: whole_box(rect, whole)? },
-        ShapeGeometry::Triangle { rect } => ShapeGeometry::Triangle { rect: whole_box(rect, whole)? },
+        ShapeGeometry::Triangle { rect, corner_radius } => ShapeGeometry::Triangle { rect: whole_box(rect, whole)?, corner_radius: *corner_radius },
         ShapeGeometry::Polygon { rect, sides, star_ratio } => ShapeGeometry::Polygon { rect: whole_box(rect, whole)?, sides: *sides, star_ratio: *star_ratio },
         ShapeGeometry::Custom { rect, keep_proportions } => ShapeGeometry::Custom { rect: whole_box(rect, whole)?, keep_proportions: *keep_proportions },
         ShapeGeometry::Line { from, to, weight } => {
@@ -210,7 +210,10 @@ fn geometry_params(app: &PhotocraftApp, geometry: &ShapeGeometry, kind: ShapeKin
         ShapeGeometry::Rect { rect, .. } => json!({"kind": "rect", "rect": box_of(rect)}),
         ShapeGeometry::Ellipse { rect } => json!({"kind": "ellipse", "rect": box_of(rect)}),
         // The Triangle tool's triangle fills its box (#13350).
-        ShapeGeometry::Triangle { rect } => json!({"kind": "triangle", "rect": box_of(rect)}),
+        ShapeGeometry::Triangle { rect, corner_radius } if *corner_radius > 0.0 => {
+            json!({"kind": "triangle", "rect": box_of(rect), "cornerRadius": corner_radius})
+        }
+        ShapeGeometry::Triangle { rect, .. } => json!({"kind": "triangle", "rect": box_of(rect)}),
         ShapeGeometry::Polygon { rect, sides, star_ratio } => {
             let mut p = json!({"kind": if kind == ShapeKind::Star { "star" } else { "polygon" }, "rect": box_of(rect), "sides": sides});
             if kind == ShapeKind::Star || *star_ratio < 1.0 {
