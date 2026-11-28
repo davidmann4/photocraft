@@ -18,12 +18,7 @@ fn dabs(brush: &BrushSettings) -> Vec<Dab> {
     let mut out = Vec::new();
     for step in 0..64_u16 {
         builder.build(
-            &StepInput {
-                point: StrokePoint::new(f64::from(step) * 80.0, 40.0, 1.0),
-                direction: 0.0,
-                initial_direction: 0.0,
-                step: u64::from(step),
-            },
+            &StepInput { point: StrokePoint::new(f64::from(step) * 80.0, 40.0, 1.0), direction: 0.0, initial_direction: 0.0, step: u64::from(step) },
             &mut out,
         );
     }

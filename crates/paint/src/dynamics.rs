@@ -660,9 +660,8 @@ impl DabBuilder {
                 angle +=
                     control_angle(sd.angle.control, sd.angle.fade_steps, s) + rand_signed(seed, i, stream::ANGLE) * sd.angle.jitter.clamp(0.0, 1.0) * 180.0;
                 // Jitter alone keeps a quarter of the base tip; unmeasured controllers keep their existing range.
-                roundness = (roundness
-                    * scalar(&sd.roundness, s, r(stream::ROUNDNESS) * if sd.roundness.control == Control::Off { 0.75 } else { 1.0 }))
-                .clamp(0.01, 1.0);
+                roundness = (roundness * scalar(&sd.roundness, s, r(stream::ROUNDNESS) * if sd.roundness.control == Control::Off { 0.75 } else { 1.0 }))
+                    .clamp(0.01, 1.0);
                 if sd.flip_x_jitter && r(stream::FLIP_X) < 0.5 {
                     fx = !fx;
                 }
