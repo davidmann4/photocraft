@@ -1,4 +1,5 @@
 use super::*;
+use crate::color_cmds::ColorExt;
 use photocraft_doc::{Layer, LayerContent};
 
 fn tmp(name: &str) -> String {
@@ -1615,4 +1616,91 @@ fn a_whole_image_path_with_slice_numbers_is_refused() {
     let whole = format!("{out}/whole.png");
     s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "path": whole, "numbers": [1]})).unwrap();
     assert_eq!(decode(&whole).dimensions(), (64, 48));
+}
+
+/// #17199: preserving document colours embeds their working interpretation; explicitly
+/// converting for the web still names sRGB, and disabling embedding still omits ICC.
+#[test]
+fn save_for_web_embeds_the_working_rgb_only_when_preserving_document_colours() {
+    let mut s = session(8);
+    s.execute("edit.assignProfile", json!({"profile": "none"})).unwrap();
+    s.execute("edit.colorSettings", json!({"workingRgb": "prophoto-compat"})).unwrap();
+    let expected = s.color().working(photocraft_color::ColorMode::Rgb).to_bytes();
+    assert_ne!(expected, craft_cms::Builtin::Srgb.profile().to_bytes());
+    let original = s.active().unwrap().doc.clone();
+    let samples = photocraft_compose::flatten(&original).px.to_vec();
+    let dir = tmp("working-profile-17199");
+    let preserved = format!("{dir}/preserved.png");
+    s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "convertToSrgb": false, "embedIcc": true, "path": preserved})).unwrap();
+    let preserved = decode(&preserved);
+    assert_eq!(preserved.icc.as_deref(), Some(expected.as_slice()));
+    let off = format!("{dir}/off.png");
+    s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "convertToSrgb": false, "embedIcc": false, "path": off})).unwrap();
+    let off = decode(&off);
+    assert!(off.icc.is_none());
+    assert_eq!(off.data(), preserved.data(), "embedding describes the same samples");
+    let converted = format!("{dir}/srgb.png");
+    s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "convertToSrgb": true, "embedIcc": true, "path": converted})).unwrap();
+    assert_eq!(decode(&converted).icc.as_deref(), Some(craft_cms::Builtin::Srgb.profile().to_bytes().as_slice()), "an explicit web conversion keeps its sRGB destination tag");
+    assert_eq!(s.active().unwrap().doc.icc_profile, original.icc_profile);
+    assert_eq!(photocraft_compose::flatten(&s.active().unwrap().doc).px.to_vec(), samples);
+    // An export may be authorized while a stored working-profile path is not. The inherited
+    // job gate must run before resolving that path, including APIs without Session::execute.
+    fn deny_profile_path(id: &str, params: &Value) -> crate::Result<()> {
+        if id == "edit.profileInfo" && params.get("profile").and_then(Value::as_str).is_some_and(|p| p.ends_with("blocked-working.icc")) {
+            return Err(EngineError::Other("denied working ICC read 17199".into()));
+        }
+        Ok(())
+    }
+    let profile_dir = tempfile::tempdir().unwrap();
+    let profile_path = profile_dir.path().join("blocked-working.icc");
+    std::fs::write(&profile_path, expected.as_slice()).unwrap();
+    s.execute("edit.colorSettings", json!({"workingRgb": profile_path.to_string_lossy()})).unwrap();
+    let _authorization = crate::jobs::render_authorization_scope(Some(deny_profile_path));
+
+    let blocked = format!("{dir}/blocked.png");
+    let error = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "convertToSrgb": false, "embedIcc": true, "path": blocked})).unwrap_err();
+    assert!(error.to_string().contains("denied working ICC read 17199"));
+    assert!(!std::path::Path::new(&blocked).exists());
+
+}
+
+/// #17199: Quick WebP's regular encoder embeds by default, so a non-converting export
+/// needs the same working-space interpretation even though Quick Export has no ICC toggle.
+#[test]
+fn quick_webp_without_conversion_embeds_the_untagged_working_rgb() {
+    let mut s = session(8);
+    s.execute("edit.assignProfile", json!({"profile": "none"})).unwrap();
+    s.execute("edit.colorSettings", json!({"workingRgb": "prophoto-compat"})).unwrap();
+    let expected = s.color().working(photocraft_color::ColorMode::Rgb).to_bytes();
+    assert_ne!(expected, craft_cms::Builtin::Srgb.profile().to_bytes());
+    let original = s.active().unwrap().doc.clone();
+    let samples = photocraft_compose::flatten(&original).px.to_vec();
+    s.execute("file.export.exportPreferences", json!({"quickExportFormat": "png", "convertToSrgb": false, "webpLossless": true, "metadata": "none"})).unwrap();
+    let path = format!("{}/working.webp", tmp("quick-working-profile-17199"));
+    s.execute("file.export.quickExport", json!({"path": path})).unwrap();
+    assert_eq!(decode(&path).icc.as_deref(), Some(expected.as_slice()));
+    assert_eq!(s.active().unwrap().doc.icc_profile, original.icc_profile);
+    assert_eq!(photocraft_compose::flatten(&s.active().unwrap().doc).px.to_vec(), samples);
+    s.execute("prefs.reset", json!({"path": "export"})).unwrap();
+    // An export may be authorized while a stored working-profile path is not. The inherited
+    // job gate must run before resolving that path, including APIs without Session::execute.
+    fn deny_profile_path(id: &str, params: &Value) -> crate::Result<()> {
+        if id == "edit.profileInfo" && params.get("profile").and_then(Value::as_str).is_some_and(|p| p.ends_with("blocked-working.icc")) {
+            return Err(EngineError::Other("denied working ICC read 17199".into()));
+        }
+        Ok(())
+    }
+    let profile_dir = tempfile::tempdir().unwrap();
+    let profile_path = profile_dir.path().join("blocked-working.icc");
+    std::fs::write(&profile_path, expected.as_slice()).unwrap();
+    s.execute("edit.colorSettings", json!({"workingRgb": profile_path.to_string_lossy()})).unwrap();
+    let _authorization = crate::jobs::render_authorization_scope(Some(deny_profile_path));
+
+    s.execute("file.export.exportPreferences", json!({"quickExportFormat": "png", "convertToSrgb": false, "webpLossless": true})).unwrap();
+    let blocked = format!("{}/blocked.webp", tmp("quick-blocked-profile-17199"));
+    let error = s.execute("file.export.quickExport", json!({"path": blocked})).unwrap_err();
+    assert!(error.to_string().contains("denied working ICC read 17199"));
+    assert!(!std::path::Path::new(&blocked).exists());
+
 }

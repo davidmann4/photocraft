@@ -231,12 +231,17 @@ fn save_for_web_impl(s: &mut Session, p: &Value, write: &mut dyn FnMut(&str, &[u
     // just as Session::execute does before dispatching the native command.
     crate::float_cmds::before_command(s, cmd)?;
     let d = s.active().ok_or(EngineError::NoDocument)?;
-    let doc = d.doc.clone();
+    let mut doc = d.doc.clone();
+    if st.embed_icc && !st.convert_to_srgb && doc.icc_profile.is_none() && doc.mode == photocraft_doc::ColorMode::Rgb {
+        // Keeping document colours also keeps the working space that interprets untagged RGB.
+        let profile = crate::color_cmds::export_working_profile(s, doc.mode)?.to_bytes();
+        std::sync::Arc::make_mut(&mut doc).icc_profile = Some(profile);
+    }
     let (wdoc, sx, sy) = web_document(&doc, p, &st)?;
     let buf = photocraft_compose::flatten(&wdoc);
     let bw = wdoc.size.width as usize;
-    // An untagged document is treated as sRGB (see [`web_document`]); with Embed Color Profile
-    // on, the file says so, as Photoshop's does (#9325).
+    // Copies that retain the working space are tagged above. Keep the default sRGB tag for
+    // the remaining untagged web output (#9325).
     let srgb = (st.embed_icc && wdoc.icc_profile.is_none()).then(|| craft_cms::Builtin::Srgb.profile().to_bytes().to_vec());
     let icc = wdoc.icc_profile.as_deref().map(|v| v.as_slice()).or(srgb.as_deref());
     let xmp = web_xmp(&doc, st.metadata);

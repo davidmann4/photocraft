@@ -759,6 +759,16 @@ pub fn working_profile(mode: ColorMode) -> Arc<Profile> {
     Arc::new(craft_cms::builtin::default_for(mode_space(mode)).unwrap_or(Builtin::Srgb.profile()).clone())
 }
 
+/// Resolve an export copy's working profile under the session's existing profile-read gate.
+/// The actual spec is authorized so an implicit working space cannot hide an ICC path.
+pub(crate) fn export_working_profile(s: &Session, mode: ColorMode) -> Result<Arc<Profile>> {
+    let _authorization = crate::jobs::render_authorization_scope(s.authorize);
+    if let Some(spec) = s.color().settings.working_spec(mode_space(mode)) {
+        crate::jobs::authorize_render_command("edit.profileInfo", &json!({"profile": spec}))?;
+    }
+    Ok(s.color().working(mode))
+}
+
 /// Parses ICC bytes, caching by allocation so repeated lookups for the same document are free.
 pub fn profile_from_bytes(bytes: &Arc<Vec<u8>>) -> std::result::Result<Arc<Profile>, craft_cms::CmsError> {
     type Cache = Mutex<Vec<(Weak<Vec<u8>>, Arc<Profile>)>>;
