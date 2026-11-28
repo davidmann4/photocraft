@@ -608,16 +608,7 @@ fn builder(
 /// their values kept; "Ask When Opening" stays (#14245). A row that may hold no value takes no input.
 fn color_settings_greying(params: &[Param], fields: &DialogFields) -> Vec<Param> {
     let all_off = ["policyRgb", "policyCmyk", "policyGray"].iter().all(|key| fields.text(key) == Some("off"));
-    params
-        .iter()
-        .map(|p| {
-            let mut p = p.clone();
-            if all_off && matches!(p.key.as_str(), "askOnPaste" | "askOnMissing") {
-                p.enabled_when = Some((p.key.clone(), Vec::new()));
-            }
-            p
-        })
-        .collect()
+    params.iter().map(|p| if all_off && matches!(p.key.as_str(), "askOnPaste" | "askOnMissing") { p.clone().disabled() } else { p.clone() }).collect()
 }
 
 /// Opens `command`'s schema dialog using the current settings and editing target. The dialog's key
