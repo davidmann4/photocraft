@@ -236,6 +236,13 @@ fn include_icc_uses_the_working_space_only_for_untagged_layers() {
     s.execute("edit.colorSettings", json!({"workingRgb": profile_path.to_string_lossy()})).unwrap();
     let _authorization = crate::jobs::render_authorization_scope(Some(deny_profile_path));
 
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 2, "height": 2})).unwrap();
+    s.execute("select.float", json!({"dx": 2})).unwrap();
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some());
+    let document = s.active().unwrap().doc.clone();
+    let revision = s.active().unwrap().revision;
+    let history = s.active().unwrap().history.entries();
+
     let mut writes = 0;
     let error = export_layers_report_with(&s, &json!({"format": "png", "iccProfile": true}), |_, _| {
         writes += 1;
@@ -245,4 +252,17 @@ fn include_icc_uses_the_working_space_only_for_untagged_layers() {
     assert!(error.to_string().contains("denied working ICC read 17199"));
     assert_eq!(writes, 0, "a rejected implicit profile read must not produce a layer file");
     assert!(s.active().unwrap().doc.icc_profile.is_none());
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some(), "a denied profile read leaves the move floating");
+    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &document));
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().history.entries(), history, "no History step is added");
+
+    let output = tempfile::tempdir().unwrap();
+    let error = s.execute("file.export.layersToFiles", json!({"dir": output.path().to_string_lossy(), "format": "png", "iccProfile": true})).unwrap_err();
+    assert!(error.to_string().contains("denied working ICC read 17199"));
+    assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 0);
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some(), "a denied profile read leaves the move floating");
+    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &document));
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().history.entries(), history, "no History step is added");
 }

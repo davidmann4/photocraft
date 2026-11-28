@@ -769,6 +769,45 @@ pub(crate) fn export_working_profile(s: &Session, mode: ColorMode) -> Result<Arc
     Ok(s.color().working(mode))
 }
 
+/// Refuse an export's implicit profile read before dispatch drops a floating selection.
+pub(crate) fn check_export_working_profile(s: &Session, id: &str, p: &Value) -> Result<()> {
+    if !matches!(id, "file.export.layersToFiles" | "file.export.saveForWebLegacy" | "file.export.quickExport") {
+        return Ok(());
+    }
+    let Some(st) = s.active() else { return Ok(()) };
+    let doc = &st.doc;
+    if doc.icc_profile.is_some() || !matches!(doc.mode, ColorMode::Rgb | ColorMode::Grayscale) {
+        return Ok(());
+    }
+    let needed = match id {
+        "file.export.layersToFiles" => p.get("iccProfile").and_then(Value::as_bool) == Some(true),
+        "file.export.saveForWebLegacy" if doc.mode == ColorMode::Rgb => {
+            let settings = crate::web_cmds::WebSettings::from_params(p, id)?;
+            settings.embed_icc && !settings.convert_to_srgb
+        }
+        "file.export.quickExport" if doc.mode == ColorMode::Rgb => {
+            let prefs = s.prefs().export.clone();
+            let path = p
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+                .or_else(|| crate::web_cmds::quick_export_target(s));
+            let format = path.map(|path| {
+                crate::file_cmds::extension(&path).unwrap_or_else(|| {
+                    serde_json::to_value(prefs.quick_export_format).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default()
+                })
+            });
+            !prefs.convert_to_srgb && format.as_deref() == Some("webp")
+        }
+        _ => false,
+    };
+    if needed {
+        export_working_profile(s, doc.mode)?;
+    }
+    Ok(())
+}
+
 /// Parses ICC bytes, caching by allocation so repeated lookups for the same document are free.
 pub fn profile_from_bytes(bytes: &Arc<Vec<u8>>) -> std::result::Result<Arc<Profile>, craft_cms::CmsError> {
     type Cache = Mutex<Vec<(Weak<Vec<u8>>, Arc<Profile>)>>;

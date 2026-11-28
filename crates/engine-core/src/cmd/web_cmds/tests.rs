@@ -1662,10 +1662,34 @@ fn save_for_web_embeds_the_working_rgb_only_when_preserving_document_colours() {
     s.execute("edit.colorSettings", json!({"workingRgb": profile_path.to_string_lossy()})).unwrap();
     let _authorization = crate::jobs::render_authorization_scope(Some(deny_profile_path));
 
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 2, "height": 2})).unwrap();
+    s.execute("select.float", json!({"dx": 2})).unwrap();
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some());
+    let document = s.active().unwrap().doc.clone();
+    let revision = s.active().unwrap().revision;
+    let history = s.active().unwrap().history.entries();
+
     let blocked = format!("{dir}/blocked.png");
     let error = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "convertToSrgb": false, "embedIcc": true, "path": blocked})).unwrap_err();
     assert!(error.to_string().contains("denied working ICC read 17199"));
     assert!(!std::path::Path::new(&blocked).exists());
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some(), "a denied profile read leaves the move floating");
+    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &document));
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().history.entries(), history, "no History step is added");
+
+    let mut writes = 0;
+    let error = save_for_web_with_writer(&mut s, &json!({"format": "png24", "convertToSrgb": false, "embedIcc": true, "path": blocked}), &mut |_, _| {
+        writes += 1;
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("denied working ICC read 17199"));
+    assert_eq!(writes, 0);
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some(), "a denied profile read leaves the move floating");
+    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &document));
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().history.entries(), history, "no History step is added");
 }
 
 /// #17199: Quick WebP's regular encoder embeds by default, so a non-converting export
@@ -1701,8 +1725,19 @@ fn quick_webp_without_conversion_embeds_the_untagged_working_rgb() {
     let _authorization = crate::jobs::render_authorization_scope(Some(deny_profile_path));
 
     s.execute("file.export.exportPreferences", json!({"quickExportFormat": "png", "convertToSrgb": false, "webpLossless": true})).unwrap();
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 2, "height": 2})).unwrap();
+    s.execute("select.float", json!({"dx": 2})).unwrap();
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some());
+    let document = s.active().unwrap().doc.clone();
+    let revision = s.active().unwrap().revision;
+    let history = s.active().unwrap().history.entries();
+
     let blocked = format!("{}/blocked.webp", tmp("quick-blocked-profile-17199"));
     let error = s.execute("file.export.quickExport", json!({"path": blocked})).unwrap_err();
     assert!(error.to_string().contains("denied working ICC read 17199"));
     assert!(!std::path::Path::new(&blocked).exists());
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some(), "a denied profile read leaves the move floating");
+    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &document));
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().history.entries(), history, "no History step is added");
 }
