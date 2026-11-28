@@ -35,7 +35,7 @@ fn full_roundness_jitter_keeps_a_quarter_of_the_base_tip() {
     assert!(round.iter().any(|d| d.roundness > 0.9), "the range still reaches nearly the full tip");
     assert!(round.iter().all(|d| d.radius * 2.0 * d.roundness >= brush.size * 0.25));
 
-    // The measured floor is relative to the tip: a flat base must not become rounder than it was.
+    // Keep the bound relative to the base so jitter never makes a flat tip rounder.
     let flat = BrushSettings { roundness: 0.2, ..brush };
     let flat_dabs = dabs(&flat);
     assert!(flat_dabs.iter().all(|d| d.roundness >= flat.roundness * 0.25 && d.roundness <= flat.roundness));
