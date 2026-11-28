@@ -55,10 +55,7 @@ fn replay_png(app: &mut PhotocraftApp, writes: &Writes, profile: &str, embed: bo
 
 #[test]
 fn document_profile_png_embeds_working_or_tagged_rgb_and_gray_without_changing_pixels() {
-    for (mode, working, own) in [
-        (ColorMode::Rgb, Builtin::ProPhotoCompat, Builtin::DisplayP3),
-        (ColorMode::Grayscale, Builtin::GrayGamma22, Builtin::SGray),
-    ] {
+    for (mode, working, own) in [(ColorMode::Rgb, Builtin::ProPhotoCompat, Builtin::DisplayP3), (ColorMode::Grayscale, Builtin::GrayGamma22, Builtin::SGray)] {
         for tagged in [None, Some(own)] {
             let (mut app, writes) = app(mode, tagged);
             let source = app.session.active().unwrap().doc.clone();

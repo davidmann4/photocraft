@@ -1641,7 +1641,11 @@ fn save_for_web_embeds_the_working_rgb_only_when_preserving_document_colours() {
     assert_eq!(off.data(), preserved.data(), "embedding describes the same samples");
     let converted = format!("{dir}/srgb.png");
     s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "convertToSrgb": true, "embedIcc": true, "path": converted})).unwrap();
-    assert_eq!(decode(&converted).icc.as_deref(), Some(craft_cms::Builtin::Srgb.profile().to_bytes().as_slice()), "an explicit web conversion keeps its sRGB destination tag");
+    assert_eq!(
+        decode(&converted).icc.as_deref(),
+        Some(craft_cms::Builtin::Srgb.profile().to_bytes().as_slice()),
+        "an explicit web conversion keeps its sRGB destination tag"
+    );
     assert_eq!(s.active().unwrap().doc.icc_profile, original.icc_profile);
     assert_eq!(photocraft_compose::flatten(&s.active().unwrap().doc).px.to_vec(), samples);
     // An export may be authorized while a stored working-profile path is not. The inherited
@@ -1662,7 +1666,6 @@ fn save_for_web_embeds_the_working_rgb_only_when_preserving_document_colours() {
     let error = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "convertToSrgb": false, "embedIcc": true, "path": blocked})).unwrap_err();
     assert!(error.to_string().contains("denied working ICC read 17199"));
     assert!(!std::path::Path::new(&blocked).exists());
-
 }
 
 /// #17199: Quick WebP's regular encoder embeds by default, so a non-converting export
@@ -1702,5 +1705,4 @@ fn quick_webp_without_conversion_embeds_the_untagged_working_rgb() {
     let error = s.execute("file.export.quickExport", json!({"path": blocked})).unwrap_err();
     assert!(error.to_string().contains("denied working ICC read 17199"));
     assert!(!std::path::Path::new(&blocked).exists());
-
 }

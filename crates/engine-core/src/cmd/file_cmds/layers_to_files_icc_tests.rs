@@ -240,9 +240,9 @@ fn include_icc_uses_the_working_space_only_for_untagged_layers() {
     let error = export_layers_report_with(&s, &json!({"format": "png", "iccProfile": true}), |_, _| {
         writes += 1;
         Ok(())
-    }).unwrap_err();
+    })
+    .unwrap_err();
     assert!(error.to_string().contains("denied working ICC read 17199"));
     assert_eq!(writes, 0, "a rejected implicit profile read must not produce a layer file");
     assert!(s.active().unwrap().doc.icc_profile.is_none());
-
 }

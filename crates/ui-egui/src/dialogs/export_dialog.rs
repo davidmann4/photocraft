@@ -1325,9 +1325,9 @@ mod preserve_details_tests;
 #[cfg(test)]
 mod srgb_default_tests;
 #[cfg(test)]
-mod working_profile_tests;
-#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod working_profile_tests;
 
 #[cfg(test)]
 mod jpg_progressive_tests;
