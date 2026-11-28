@@ -60,8 +60,14 @@ fn opacity_flow_angle_and_roundness_fades_do_not_change_spacing() {
     for control in 0..4 {
         let mut variant = plain.clone();
         match control {
-            0 => { variant.transfer.enabled = true; variant.transfer.opacity = fade; }
-            1 => { variant.transfer.enabled = true; variant.transfer.flow = fade; }
+            0 => {
+                variant.transfer.enabled = true;
+                variant.transfer.opacity = fade;
+            }
+            1 => {
+                variant.transfer.enabled = true;
+                variant.transfer.flow = fade;
+            }
             2 => variant.shape_dynamics.angle = fade,
             _ => variant.shape_dynamics.roundness = fade,
         }
