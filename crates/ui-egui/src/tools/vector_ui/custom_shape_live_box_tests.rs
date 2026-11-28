@@ -75,6 +75,14 @@ fn drag(app: &mut PhotocraftApp, from: [f64; 2], to: [f64; 2]) {
     testing::release(app, to, NONE);
 }
 
+/// A handle drag on the handle at `at`: the press lands `press` outside it (3 px, so a corner-radius widget
+/// never takes it), and the cursor moves `delta` from there. A corner keeps the grab offset — it moves by the
+/// cursor's delta rather than to the cursor (craft-libs `4a52a22e7`, on main since `35b60e9341`) — so the box
+/// moves exactly `delta`.
+fn drag_handle(app: &mut PhotocraftApp, at: [f64; 2], press: [f64; 2], delta: [f64; 2]) {
+    drag(app, [at[0] + press[0], at[1] + press[1]], [at[0] + press[0] + delta[0], at[1] + press[1] + delta[1]]);
+}
+
 #[test]
 fn the_placed_shape_shows_a_box_whose_corner_handle_scales_it_in_one_step() {
     let mut app = app();
@@ -82,9 +90,9 @@ fn the_placed_shape_shows_a_box_whose_corner_handle_scales_it_in_one_step() {
     let (x0, y0, x1, y1) = bounds(&app, id);
     let steps = past(&app);
     let layers = layer_count(&app);
-    // The bottom-right handle, pressed 3 px outside the box as in the box controls' tests, dragged 30 px in.
+    // The bottom-right handle, pressed 3 px outside the box as in the box controls' tests, its cursor moved 30 px in.
     // Before the fix the press falls through to the tool: a second Star is placed, not a scale.
-    drag(&mut app, [x1 + 3.0, y1 + 3.0], [x1 - 30.0, y1 - 30.0]);
+    drag_handle(&mut app, [x1, y1], [3.0, 3.0], [-30.0, -30.0]);
     assert_eq!(past(&app), steps + 1, "one History step");
     assert_eq!(last_step(&app).as_deref(), Some("Transform Path"), "the handle scaled the shape");
     assert_eq!(layer_count(&app), layers, "the press took the handle, not the canvas: no new placement");
@@ -107,7 +115,13 @@ fn the_box_has_eight_handles_and_every_one_scales_the_shape() {
         let (x0, y0, x1, y1) = bounds(&app, id);
         let (bx, by) = ([x0, (x0 + x1) / 2.0, x1, x1, x1, (x0 + x1) / 2.0, x0, x0][n], [y0, y0, y0, (y0 + y1) / 2.0, y1, y1, y1, (y0 + y1) / 2.0][n]);
         let steps = past(&app);
-        drag(&mut app, [bx + HANDLE_PRESS[n][0], by + HANDLE_PRESS[n][1]], [bx + HANDLE_DRAG[n][0], by + HANDLE_DRAG[n][1]]);
+        if n % 2 == 0 {
+            drag_handle(&mut app, [bx, by], HANDLE_PRESS[n], HANDLE_DRAG[n]);
+        } else {
+            // A side follows the cursor instead of keeping the grab offset, so its cursor ends 10 px in from
+            // the handle while the press still lands 3 px outside the box.
+            drag(&mut app, [bx + HANDLE_PRESS[n][0], by + HANDLE_PRESS[n][1]], [bx + HANDLE_DRAG[n][0], by + HANDLE_DRAG[n][1]]);
+        }
         assert_eq!(past(&app), steps + 1, "handle {n}: one History step");
         assert_eq!(last_step(&app).as_deref(), Some("Transform Path"), "handle {n}: the handle scaled");
         assert_eq!(layer_count(&app), layers, "handle {n}: no new placement, the press took the handle");
@@ -119,7 +133,7 @@ fn the_box_has_eight_handles_and_every_one_scales_the_shape() {
 }
 
 /// The box after handle `n` (clockwise from the top left) moved 10 px in, on a square box where the
-/// corner's projection rule leaves the corner exactly at the drag's end.
+/// corner's projection rule leaves the corner exactly at the drag's delta.
 fn expected_box(mut r: [f64; 4], n: usize) -> [f64; 4] {
     const IN: f64 = 10.0;
     if matches!(n, 0 | 6..=7) {
@@ -196,7 +210,7 @@ fn the_box_returns_when_the_just_placed_layer_is_selected_again() {
     app.run("layer.select", json!({"layer": id})).unwrap();
     testing::frame(&mut app);
     let steps = past(&app);
-    drag(&mut app, [x1 + 3.0, y1 + 3.0], [x1 - 30.0, y1 - 30.0]);
+    drag_handle(&mut app, [x1, y1], [3.0, 3.0], [-30.0, -30.0]);
     assert_eq!(last_step(&app).as_deref(), Some("Transform Path"), "selected again: the handle scaled");
     assert_eq!(past(&app), steps + 1, "one History step");
     near(bounds(&app, id), [x0, y0, x1 - 30.0, y1 - 30.0]);
@@ -211,7 +225,7 @@ fn a_new_shape_moves_the_box_and_the_older_shape_keeps_todays_look() {
     let sb = bounds(&app, second);
     let steps = past(&app);
     let layers = layer_count(&app);
-    drag(&mut app, [sb.2 + 3.0, sb.3 + 3.0], [sb.2 - 30.0, sb.3 - 30.0]);
+    drag_handle(&mut app, [sb.2, sb.3], [3.0, 3.0], [-30.0, -30.0]);
     assert_eq!(last_step(&app).as_deref(), Some("Transform Path"), "the new shape's handle scaled");
     assert_eq!(past(&app), steps + 1, "one History step");
     assert_eq!(layer_count(&app), layers, "no new placement");
@@ -220,7 +234,7 @@ fn a_new_shape_moves_the_box_and_the_older_shape_keeps_todays_look() {
     let third = place(&mut app, [100.0, 400.0, 300.0, 600.0]);
     let tb = bounds(&app, third);
     let steps = past(&app);
-    drag(&mut app, [tb.2 + 3.0, tb.3 + 3.0], [tb.2 - 30.0, tb.3 - 30.0]);
+    drag_handle(&mut app, [tb.2, tb.3], [3.0, 3.0], [-30.0, -30.0]);
     assert_eq!(last_step(&app).as_deref(), Some("Transform Path"), "the newest shape's handle scaled");
     assert_eq!(past(&app), steps + 1, "one History step");
     // The scaled second shape is an older custom shape layer now: with this tool it keeps today's look —
@@ -245,7 +259,7 @@ fn undoing_the_placement_ends_the_box() {
     let (x0, y0, x1, y1) = bounds(&app, id);
     let steps = past(&app);
     let layers = layer_count(&app);
-    drag(&mut app, [x1 + 3.0, y1 + 3.0], [x1 - 30.0, y1 - 30.0]);
+    drag_handle(&mut app, [x1, y1], [3.0, 3.0], [-30.0, -30.0]);
     assert_eq!(last_step(&app).as_deref(), Some("Transform Path"), "redone: the handle scaled");
     assert_eq!(past(&app), steps + 1, "one History step");
     assert_eq!(layer_count(&app), layers, "no new placement");
@@ -366,7 +380,7 @@ fn the_other_shape_tools_box_the_custom_shape_layer_as_ever() {
         testing::frame(&mut app);
         let steps = past(&app);
         let layers = layer_count(&app);
-        drag(&mut app, [x1 + 3.0, y1 + 3.0], [x1 - 30.0, y1 - 30.0]);
+        drag_handle(&mut app, [x1, y1], [3.0, 3.0], [-30.0, -30.0]);
         assert_eq!(last_step(&app).as_deref(), Some("Transform Path"), "{tool:?}: the handle scaled");
         assert_eq!(past(&app), steps + 1, "{tool:?}: one History step");
         assert_eq!(layer_count(&app), layers, "{tool:?}: no new layer");
