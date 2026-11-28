@@ -227,16 +227,28 @@ fn save_for_web_impl(s: &mut Session, p: &Value, write: &mut dyn FnMut(&str, &[u
     let st = WebSettings::from_params(p, cmd)?;
     // So are the slices: committing a floating move doesn't change them.
     let pick = slice_pick(p, cmd, &s.active().ok_or(EngineError::NoDocument)?.doc)?;
+    // A refused implicit profile read must also leave a directly called platform export's move floating.
+    let working_profile = {
+        let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+        if st.embed_icc && !st.convert_to_srgb && doc.icc_profile.is_none() && doc.mode == photocraft_doc::ColorMode::Rgb {
+            Some(crate::color_cmds::export_working_profile(s, doc.mode)?)
+        } else {
+            None
+        }
+    };
     // Direct platform calls must export the moved selection as it appears on the canvas,
     // just as Session::execute does before dispatching the native command.
     crate::float_cmds::before_command(s, cmd)?;
-    let d = s.active().ok_or(EngineError::NoDocument)?;
-    let doc = d.doc.clone();
+    let mut doc = s.active().ok_or(EngineError::NoDocument)?.doc.clone();
+    if let Some(profile) = working_profile {
+        // Tag the post-move copy, never the open document.
+        std::sync::Arc::make_mut(&mut doc).icc_profile = Some(profile.to_bytes());
+    }
     let (wdoc, sx, sy) = web_document(&doc, p, &st)?;
     let buf = photocraft_compose::flatten(&wdoc);
     let bw = wdoc.size.width as usize;
-    // An untagged document is treated as sRGB (see [`web_document`]); with Embed Color Profile
-    // on, the file says so, as Photoshop's does (#9325).
+    // Copies that retain the working space are tagged above. Keep the default sRGB tag for
+    // the remaining untagged web output (#9325).
     let srgb = (st.embed_icc && wdoc.icc_profile.is_none()).then(|| craft_cms::Builtin::Srgb.profile().to_bytes().to_vec());
     let icc = wdoc.icc_profile.as_deref().map(|v| v.as_slice()).or(srgb.as_deref());
     let xmp = web_xmp(&doc, st.metadata);

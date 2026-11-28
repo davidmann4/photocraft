@@ -71,7 +71,12 @@ pub fn export_layers_report_with(s: &Session, p: &Value, mut write: impl FnMut(&
         return Err(EngineError::Other("Layers to Files needs a document with multiple layers.".into()));
     }
     let prefix = p.get("prefix").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| stem(&d.doc.name));
-    let doc = d.doc.clone();
+    let mut doc = d.doc.clone();
+    if icc == Some(true) && doc.icc_profile.is_none() && matches!(doc.mode, ColorMode::Rgb | ColorMode::Grayscale) {
+        // Only the exported copy gains a tag; the open document remains untagged.
+        let profile = crate::color_cmds::export_working_profile(s, doc.mode)?.to_bytes();
+        std::sync::Arc::make_mut(&mut doc).icc_profile = Some(profile);
+    }
     let mut report = LayerExportReport::default();
     // Every layer takes its panel-order index, even one skipped as hidden or as an adjustment,
     // so a file keeps the same number whether Visible Layers Only is on or off (#13959).

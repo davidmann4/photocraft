@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
+use crate::color_cmds::ColorExt;
 
 fn session(mode: &str, depth: u32) -> Session {
     let mut s = crate::session();
@@ -180,4 +181,88 @@ fn an_indexed_documents_files_follow_the_setting() {
     let layered = profiles(&mut s, "tif", json!({"iccProfile": false, "tiffLayers": true}));
     assert!(layered.iter().all(|(_, icc)| icc.is_none()), "indexed layered tif: no profile");
     assert_eq!(one(&mut s, "psd", json!({"iccProfile": true})).1, Some("RGB".into()), "indexed psd: the profile");
+}
+
+/// #17199: Include ICC describes an untagged layer in the session's working space,
+/// without assigning that profile to the source document or changing its samples.
+#[test]
+fn include_icc_uses_the_working_space_only_for_untagged_layers() {
+    let export_profile = |s: &mut Session| {
+        let dir = tempfile::tempdir().unwrap();
+        let out = s.execute("file.export.layersToFiles", json!({"dir": dir.path().to_string_lossy(), "format": "png", "iccProfile": true})).unwrap();
+        let files = out["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        let bytes = std::fs::read(files[0].as_str().unwrap()).unwrap();
+        photocraft_codecs::decode(&bytes).unwrap().icc.unwrap()
+    };
+    for (mode, key, working, tagged) in [("rgb", "workingRgb", "prophoto-compat", "display-p3"), ("grayscale", "workingGray", "gray-gamma-2.2", "sgray")] {
+        let mut s = session(mode, 8);
+        s.execute("edit.assignProfile", json!({"profile": "none"})).unwrap();
+        let mut settings = json!({});
+        settings[key] = json!(working);
+        s.execute("edit.colorSettings", settings).unwrap();
+        let original = s.active().unwrap().doc.clone();
+        assert!(original.icc_profile.is_none());
+        let samples = photocraft_compose::flatten(&original).px.to_vec();
+        let expected = s.color().working(original.mode).to_bytes();
+        assert_ne!(expected, crate::color_cmds::working_profile(original.mode).to_bytes(), "{mode}: the nondefault profile must distinguish the old fallback");
+        assert_eq!(export_profile(&mut s).as_slice(), expected.as_slice(), "{mode}");
+        assert!(s.active().unwrap().doc.icc_profile.is_none());
+        assert_eq!(photocraft_compose::flatten(&s.active().unwrap().doc).px.to_vec(), samples);
+
+        s.execute("edit.assignProfile", json!({"profile": tagged})).unwrap();
+        let own = s.active().unwrap().doc.icc_profile.clone().unwrap();
+        assert_ne!(own, expected);
+        assert_eq!(export_profile(&mut s).as_slice(), own.as_slice(), "{mode}: a tag wins over the working space");
+        assert_eq!(s.active().unwrap().doc.icc_profile.as_deref(), Some(own.as_ref()));
+        assert_eq!(photocraft_compose::flatten(&s.active().unwrap().doc).px.to_vec(), samples);
+    }
+    let mut s = session("rgb", 8);
+    s.execute("edit.assignProfile", json!({"profile": "none"})).unwrap();
+    s.execute("edit.colorSettings", json!({"workingRgb": "prophoto-compat"})).unwrap();
+    let expected = s.color().working(ColorMode::Rgb).to_bytes();
+
+    // An export may be authorized while a stored working-profile path is not. The inherited
+    // job gate must run before resolving that path, including APIs without Session::execute.
+    fn deny_profile_path(id: &str, params: &Value) -> crate::Result<()> {
+        if id == "edit.profileInfo" && params.get("profile").and_then(Value::as_str).is_some_and(|p| p.ends_with("blocked-working.icc")) {
+            return Err(EngineError::Other("denied working ICC read 17199".into()));
+        }
+        Ok(())
+    }
+    let profile_dir = tempfile::tempdir().unwrap();
+    let profile_path = profile_dir.path().join("blocked-working.icc");
+    std::fs::write(&profile_path, expected.as_slice()).unwrap();
+    s.execute("edit.colorSettings", json!({"workingRgb": profile_path.to_string_lossy()})).unwrap();
+    let _authorization = crate::jobs::render_authorization_scope(Some(deny_profile_path));
+
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 2, "height": 2})).unwrap();
+    s.execute("select.float", json!({"dx": 2})).unwrap();
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some());
+    let document = s.active().unwrap().doc.clone();
+    let revision = s.active().unwrap().revision;
+    let history = s.active().unwrap().history.entries();
+
+    let mut writes = 0;
+    let error = export_layers_report_with(&s, &json!({"format": "png", "iccProfile": true}), |_, _| {
+        writes += 1;
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("denied working ICC read 17199"));
+    assert_eq!(writes, 0, "a rejected implicit profile read must not produce a layer file");
+    assert!(s.active().unwrap().doc.icc_profile.is_none());
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some(), "a denied profile read leaves the move floating");
+    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &document));
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().history.entries(), history, "no History step is added");
+
+    let output = tempfile::tempdir().unwrap();
+    let error = s.execute("file.export.layersToFiles", json!({"dir": output.path().to_string_lossy(), "format": "png", "iccProfile": true})).unwrap_err();
+    assert!(error.to_string().contains("denied working ICC read 17199"));
+    assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 0);
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some(), "a denied profile read leaves the move floating");
+    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &document));
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().history.entries(), history, "no History step is added");
 }
