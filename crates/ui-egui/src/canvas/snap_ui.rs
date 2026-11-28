@@ -57,7 +57,7 @@ fn selection_moves(app: &PhotocraftApp) -> bool {
 /// group does not snap to its own layers' starting edges), the type layer being edited (a paragraph-box handle drag
 /// does not snap to the text it resizes, #6819), the layers of the open Free Transform and the shape layers the shape
 /// scale box or a corner widget is pressing.
-fn moving_set(app: &PhotocraftApp) -> Vec<LayerId> {
+pub(crate) fn moving_set(app: &PhotocraftApp) -> Vec<LayerId> {
     let mut set = Vec::new();
     if moves_as_move_tool(app)
         && let Some(st) = app.session.active()
