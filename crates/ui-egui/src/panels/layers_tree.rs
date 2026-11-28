@@ -550,8 +550,10 @@ impl LayerTree for PhotoLayers {
     }
 
     fn accepts_mask_drop(&self, from: &LayerId, part: LayerPart, to: &LayerId) -> bool {
-        // The engine moves layer masks only.
-        part == LayerPart::LayerMask && from != to && self.layer(to).is_some_and(|l| l.mask.is_none())
+        // The engine moves layer masks only. A layer that has one asks "Replace Layer Mask?" first (#16787).
+        part == LayerPart::LayerMask
+            && from != to
+            && self.layer(to).is_some_and(|l| l.mask.is_none() || crate::dialogs::replace_layer_mask_prompt::asks_before_replacing(l))
     }
 
     fn label_colors_in_menu(&self, target: &MenuTarget<LayerId>) -> bool {

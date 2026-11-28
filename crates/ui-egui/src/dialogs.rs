@@ -445,6 +445,7 @@ pub(crate) const PROMPTS: &[PromptRow] = &[
     disk_change_prompt::answer,
     rasterize_prompt::answer,
     live_shape_prompt::answer,
+    replace_layer_mask_prompt::answer,
     assign_profile_layers_alert::answer,
     preset_group_prompt::answer,
     open_prompt::answer_prompt,
@@ -669,13 +670,14 @@ const ENGINE_READ_SHARED: &[&str] = &[photocraft_engine::atn_cmds::CAF_WORKSPACE
 
 /// The "Don't show again" entries (`{"skip": true}`), by key, as their prompt modules read them. Told apart by key, not
 /// by the shape of the value.
-fn dont_show_again_keys() -> [&'static str; 5] {
+fn dont_show_again_keys() -> [&'static str; 6] {
     [
         delete_layer_prompt::PREF,
         live_shape_prompt::PREF,
         assign_profile_layers_alert::PREF,
         crate::analysis::note_alerts::DELETE_NOTE_PREF,
         crate::retouch_ui::CAM_NO_PIXELS_PREF,
+        replace_layer_mask_prompt::PREF,
     ]
 }
 
@@ -849,6 +851,7 @@ mod paths_export_document_bounds_tests;
 pub(crate) mod pattern_fill_ui;
 pub mod preset_group_prompt;
 pub mod rasterize_prompt;
+pub(crate) mod replace_layer_mask_prompt;
 #[cfg(test)]
 mod rotate_canvas_layout_tests;
 pub(crate) mod rotate_canvas_ui;

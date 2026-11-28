@@ -262,7 +262,14 @@ fn map_event(app: &mut PhotocraftApp, ctx: &egui::Context, event: LayersEvent<La
                     }
                 }
                 LayerDrop::Mask(mv) if mv.part == LayerPart::LayerMask => {
-                    actions.push(("layer.layerMask.moveTo".into(), json!({"layer": mv.layer.0, "to": mv.to.0, "copy": mv.copy})));
+                    use crate::dialogs::replace_layer_mask_prompt as replace;
+                    let target = doc.layer(mv.to);
+                    if target.is_some_and(replace::asks_before_replacing) {
+                        // Asks "Replace Layer Mask?" first, unless "Don't show again" was ticked (#16787).
+                        actions.extend(replace::ask(app, mv.layer, mv.to, mv.copy));
+                    } else if target.is_some_and(|l| l.mask.is_none()) {
+                        actions.push(replace::move_action(mv.layer, mv.to, mv.copy, false));
+                    }
                 }
                 _ => {}
             }
