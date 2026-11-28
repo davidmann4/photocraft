@@ -502,10 +502,10 @@ pub fn spread_split(size: f32, spread: f32) -> (f32, f32) {
 pub(super) fn shadow_map(shape: &Map, s: &Shadow, light: &GlobalLight, inner: bool, origin: (i32, i32)) -> Map {
     let angle = if s.use_global_light { light.angle } else { s.angle };
     let (dx, dy) = offset(angle, s.distance);
-    // #14934: an Anti-aliased Inner Shadow builds its map from the shape off-centre (`aa_shift`).
-    // Only the inner branch was measured, so a Drop Shadow keeps today's map (#14881 is its own),
-    // and `aa_shift` leaves every Choke that dilates and every Size whose blur is the identity.
-    let aa = aa_shift(inner && s.anti_alias, &s.contour, s.size, s.spread);
+    // #14934 (Inner Shadow) and #14881 (Drop Shadow): an Anti-aliased shadow builds its map from
+    // the shape off-centre (`aa_shift`); both measured the same third of a pixel. `aa_shift`
+    // leaves every Choke / Spread that dilates and every Size whose blur is the identity.
+    let aa = aa_shift(s.anti_alias, &s.contour, s.size, s.spread);
     let src = if inner { shape.clone().map(|a| 1.0 - a) } else { shape.clone() };
     let mut m = src.shifted(dx + aa, dy + aa, if inner { 1.0 } else { 0.0 });
     let (r, bw) = spread_split(s.size, s.spread);
