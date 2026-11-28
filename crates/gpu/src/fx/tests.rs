@@ -586,3 +586,53 @@ fn anti_aliased_inner_shadow_stage_follows_the_measured_geometry() {
     assert_eq!(far_choke_on.0.len(), 2, "Choke 50 % at Distance 5 shifts the source and the distance field");
     assert_eq!(far_choke_on, far_choke_off, "the Choke 50 % program at Distance 5 stayed whole-pixel: on {:?}, off {:?}", far_choke_on.0, far_choke_off.0);
 }
+
+/// #14984: the GPU's Satin program takes the CPU's Anti-aliased sub-pixel offset on both of its
+/// shifted copies (`satin_aa_shift`), so the pattern moves while the Distance stays. Linear,
+/// unmeasured contours and Size 1 keep today's program, key and all.
+#[test]
+fn anti_aliased_satin_shifts_both_copies() {
+    use photocraft_doc::{Contour, Satin};
+    let named = |name: &str| Contour::Custom {
+        name: name.into(),
+        points: [(0.0, 0.0), (0.383, 0.414), (1.0, 1.0)]
+            .iter()
+            .map(|(input, output)| photocraft_doc::adjust::CurvePoint { input: *input, output: *output })
+            .collect(),
+        corners: vec![false, true, false],
+    };
+    let satin = |size: f32, contour: Contour, anti_aliased: bool| Satin {
+        common: FxCommon::new(BlendMode::Normal, 1.0),
+        color: photocraft_color::Color::BLACK,
+        angle: 90.0,
+        distance: 20.0,
+        size,
+        contour,
+        anti_alias: anti_aliased,
+        invert: false,
+    };
+    let shifts = |s: Satin| -> (Vec<[f32; 4]>, u64) {
+        let p = program(&Effect::Satin(s), &GlobalLight::default(), false);
+        (p.stages.iter().filter(|s| s.kernel == Kernel::MShift).map(|s| s.p0).collect(), p.key)
+    };
+    let aa = photocraft_compose::effects::satin_aa_shift(true, &named("Gaussian"), 10.0);
+    assert_eq!(aa, -1.0 / 3.0, "the CPU offset the GPU has to copy");
+    // Angle 90, Distance 20: the copies sit at (0, ±20) (`offset` rounds; -0.0 for the x of the first).
+    let off = shifts(satin(10.0, named("Gaussian"), false));
+    assert_eq!(off.0.len(), 2, "a Satin shifts the shape twice");
+    for name in ["Gaussian", "Ring"] {
+        let on = shifts(satin(10.0, named(name), true));
+        assert_eq!(on.0.len(), 2, "{name}: still two shifts");
+        for (o, f) in on.0.iter().zip(&off.0) {
+            assert_eq!([o[0], o[1], o[2], o[3]], [f[0] + aa, f[1] + aa, f[2], f[3]], "{name}: each copy carries the sub-pixel offset");
+        }
+        assert_ne!(on.1, off.1, "{name}: the flag has to invalidate the cached program");
+    }
+    for (s, what) in
+        [(satin(10.0, Contour::Linear, true), "Linear"), (satin(10.0, named("Cone"), true), "Cone"), (satin(1.0, named("Gaussian"), true), "Size 1")]
+    {
+        let mut flag_off = s.clone();
+        flag_off.anti_alias = false;
+        assert_eq!(shifts(s), shifts(flag_off), "the {what} Satin program moved with Anti-aliased");
+    }
+}

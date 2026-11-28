@@ -355,6 +355,19 @@ pub fn aa_shift(on: bool, c: &Contour, size: f32, spread: f32) -> f32 {
     if on && anti_aliased_contour(c) && anti_aliased_geometry(size, spread) { -1.0 / 3.0 } else { 0.0 }
 }
 
+/// The sub-pixel offset an Anti-aliased Satin builds both of its shifted copies from (#14984):
+/// the same third of a pixel towards the top-left as `aa_shift`, which moves the whole satin
+/// pattern while keeping its Distance. The reference application was measured with the Gaussian
+/// and the Ring contour (both bands move up: the top band lighter at its inner end, the bottom band
+/// darker) and with Linear (no change at all, which `satin_lut`'s identity makes a non-event
+/// anyway, so it keeps today's map bit-for-bit); every other contour, and a Size whose blur is the
+/// identity (`anti_aliased_geometry` with no spread: Size 0, and Size 1, which has its own measured
+/// kernel, #14983), keeps today's map. Public because the GPU satin builder asks the same rule.
+pub fn satin_aa_shift(on: bool, c: &Contour, size: f32) -> f32 {
+    let measured = matches!(c, Contour::Custom { name, .. } if name.eq_ignore_ascii_case("Gaussian") || name.eq_ignore_ascii_case("Ring"));
+    if on && measured && anti_aliased_geometry(size, 0.0) { -1.0 / 3.0 } else { 0.0 }
+}
+
 /// The lengths a 100 % gradient at `angle` spans in a `w` × `h` frame: the chord (Linear and
 /// Reflected) and the ellipse-norm length (Radial, Angle, Diamond; its half is the radius).
 pub fn gradient_units(angle: f32, w: f32, h: f32) -> (f32, f32) {
