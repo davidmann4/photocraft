@@ -419,6 +419,9 @@ mod mixer_load_supply_tests;
 mod smoothing_catch_up_default_tests;
 
 #[cfg(test)]
+mod brush_roundness_jitter_tests;
+
+#[cfg(test)]
 mod brush_spacing_fade_size_tests;
 
 #[cfg(test)]
