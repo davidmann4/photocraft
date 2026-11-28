@@ -427,11 +427,74 @@ fn anti_aliased_inner_shadow_shifts_the_map_stage() {
     // Unmeasured cases keep today's stage: the contour gate is the CPU's.
     let linear = program(&Effect::InnerShadow(shadow(true, Contour::Linear)), &light, false);
     assert_eq!(shift_stages(&linear)[0].p0, [0.0, 0.0, 1.0, 1.0], "a Linear inner shadow still ignores Anti-aliased (#14934 leaves that contour unmeasured)");
-    // A Drop Shadow (its own item is #14881) keeps its whole-pixel program either way.
-    let drop_on = program(&Effect::DropShadow(shadow(true, gaussian.clone())), &light, false);
+    // A Drop Shadow without Anti-aliased keeps its whole-pixel program: no shift at Distance 0.
     let drop_off = program(&Effect::DropShadow(shadow(false, gaussian)), &light, false);
-    assert_eq!(shift_stages(&drop_on).len(), 0, "a Drop Shadow at Distance 0 takes no shift stage");
-    assert_eq!(drop_on.key, drop_off.key, "the Drop Shadow still ignores Anti-aliased (#14881 is its own item)");
+    assert_eq!(shift_stages(&drop_off).len(), 0, "a Drop Shadow at Distance 0 without Anti-aliased takes no shift stage");
+}
+
+/// #14881: the GPU's Drop Shadow program takes the same sub-pixel source offset as the CPU's
+/// `shadow_map`, on the same gate as the Inner Shadow: the Gaussian contour and a Size and Spread
+/// whose map is a shift plus a blur wider than the identity. At Distance 0 the flag off builds no
+/// shift stage at all; the flag on adds one carrying the offset (no invert, empty outside).
+#[test]
+fn anti_aliased_drop_shadow_shifts_the_map_stage() {
+    use photocraft_doc::{Contour, FxCommon, Shadow};
+    let pts: [(f32, f32); 11] = [
+        (0.0, 0.0),
+        (0.117, 0.023),
+        (0.172, 0.055),
+        (0.234, 0.117),
+        (0.305, 0.234),
+        (0.383, 0.414),
+        (0.523, 0.688),
+        (0.617, 0.812),
+        (0.703, 0.891),
+        (0.805, 0.953),
+        (1.0, 1.0),
+    ];
+    let gaussian = || Contour::Custom {
+        name: "Gaussian".into(),
+        points: pts.iter().map(|(input, output)| photocraft_doc::adjust::CurvePoint { input: *input, output: *output }).collect(),
+        corners: (0..pts.len()).map(|i| i > 0 && i < pts.len() - 1).collect(),
+    };
+    let shadow = |size: f32, spread: f32, distance: f32, contour: Contour, anti_aliased: bool| Shadow {
+        common: FxCommon::new(BlendMode::Multiply, 1.0),
+        color: photocraft_color::Color::BLACK,
+        angle: 0.0,
+        use_global_light: false,
+        distance,
+        spread,
+        size,
+        contour,
+        anti_alias: anti_aliased,
+        noise: 0.0,
+        knocks_out: false,
+    };
+    let shifts = |s: Shadow| -> (Vec<[f32; 4]>, u64) {
+        let p = program(&Effect::DropShadow(s), &GlobalLight::default(), false);
+        (p.stages.iter().filter(|s| s.kernel == Kernel::MShift).map(|s| s.p0).collect(), p.key)
+    };
+    let aa = photocraft_compose::effects::aa_shift(true, &gaussian(), 10.0, 0.0);
+    assert_eq!(aa, -1.0 / 3.0, "the CPU offset the GPU has to copy at the measured Size 10, Spread 0");
+    let off = shifts(shadow(10.0, 0.0, 0.0, gaussian(), false));
+    let on = shifts(shadow(10.0, 0.0, 0.0, gaussian(), true));
+    assert!(off.0.is_empty(), "a Drop Shadow at Distance 0 without Anti-aliased takes no shift stage: {:?}", off.0);
+    assert_eq!(on.0, vec![[aa, aa, 0.0, 0.0]], "the Anti-aliased drop shadow must shift its source by the CPU's offset");
+    assert_ne!(on.1, off.1, "the flag has to invalidate the cached program");
+    // Distance 5 at angle 0: the whole-pixel light offset (-5, 0) plus the third of a pixel.
+    let far = shifts(shadow(10.0, 0.0, 5.0, gaussian(), true));
+    assert_eq!(far.0, vec![[-5.0 + aa, aa, 0.0, 0.0]], "Distance 5 carries the light offset plus the sub-pixel offset");
+    // The gate: other contours, the identity blur and a Spread that dilates keep today's program.
+    for (s, what) in [
+        (shadow(10.0, 0.0, 0.0, Contour::Linear, true), "a Linear contour"),
+        (shadow(1.0, 0.0, 0.0, gaussian(), true), "Size 1"),
+        (shadow(2.0, 0.5, 0.0, gaussian(), true), "Size 2 Spread 50 %"),
+        (shadow(10.0, 0.5, 5.0, gaussian(), true), "Size 10 Spread 50 % at Distance 5"),
+    ] {
+        let mut flag_off = s.clone();
+        flag_off.anti_alias = false;
+        assert_eq!(shifts(s), shifts(flag_off), "the {what} drop shadow program moved with Anti-aliased");
+    }
 }
 
 /// #14934 review: the GPU's gate is the CPU's rule, including its two degenerate neighbours. At
