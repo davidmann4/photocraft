@@ -19,14 +19,14 @@ mod dispatch;
 mod options;
 
 pub(crate) use arrange::document_is_floating;
-pub(crate) use dialogs::write_copy;
+pub(crate) use dialogs::{nest_artboard_export_options, strip_artboard_name_options, write_copy};
 #[cfg(test)]
 use dispatch::is_enabled_with_engine;
 pub use dispatch::{checked, handles, invoke, is_enabled, leave_full_screen_without_document};
 pub use options::{persist, pixel_aspect_ratio, restore};
 
 /// View › Show flags (Photoshop defaults).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, craft::ui::contract::MemoProps)]
 #[serde(default)]
 pub struct Show {
     pub layer_edges: bool,
@@ -65,7 +65,7 @@ impl Default for Show {
 }
 
 /// View › Snap To targets (snapping itself is the `view.snap` master switch).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, craft::ui::contract::MemoProps)]
 #[serde(default)]
 pub struct SnapTo {
     pub guides: bool,
@@ -82,11 +82,12 @@ impl Default for SnapTo {
 }
 
 /// View-, window- and type-preference state of the shell.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, craft::ui::contract::MemoProps)]
 #[serde(default)]
 pub struct ViewOptions {
     /// View › Screen Mode (F cycles). Saved as "standard" | "fullScreenWithMenuBar" | "fullScreen".
     #[serde(with = "screen_mode_names")]
+    #[memo_props(hash = "craft-shell's screen mode: a fieldless enum")]
     pub screen_mode: ScreenMode,
     /// View › Extras (⌘H): master switch for guides, grid, edges and other overlays.
     pub extras: bool,
@@ -213,3 +214,7 @@ mod fit_image_sticky_tests;
 #[cfg(test)]
 #[path = "view_cmds/save_a_copy_name_tests.rs"]
 mod save_a_copy_name_tests;
+
+#[cfg(test)]
+#[path = "view_cmds/file_info_title_labels_tests.rs"]
+mod file_info_title_labels_tests;
