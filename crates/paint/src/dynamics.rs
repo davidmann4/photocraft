@@ -387,10 +387,15 @@ impl PathWalker {
     }
 
     pub fn push(&mut self, p: StrokePoint, step_len: &impl Fn(&StrokePoint) -> f64, out: &mut impl FnMut(StepInput)) {
+        self.push_indexed(p, &|point, _| step_len(point), out);
+    }
+
+    /// The index belongs to the dab before the gap, including the initial dab at step zero.
+    fn push_indexed(&mut self, p: StrokePoint, step_len: &impl Fn(&StrokePoint, u64) -> f64, out: &mut impl FnMut(StepInput)) {
         let Some(a) = self.last else {
             self.last = Some(p);
             self.pending_first = Some(p);
-            self.next_at = step_len(&p);
+            self.next_at = step_len(&p, 0);
             return;
         };
         let (dx, dy) = (p.x - a.x, p.y - a.y);
@@ -415,13 +420,13 @@ impl PathWalker {
                         while self.next_at <= len + 1e-9 && emitted < MAX_DISTANCE_STEPS_PER_SEGMENT && self.step < MAX_STEPS_PER_STROKE {
                             let q = lerp_pt(&a, &p, (self.next_at / len).min(1.0));
                             self.emit(q, out);
-                            self.next_at += step_len(&q).max(0.25);
+                            self.next_at += step_len(&q, self.step.saturating_sub(1)).max(0.25);
                             emitted += 1;
                         }
                         // Cut short: the rest of the segment is skipped, spacing restarts at its end.
                         // Only when the cap held back a step that was still due; a segment that ends right at the cap keeps its carry-over.
                         let cut_short = emitted == MAX_DISTANCE_STEPS_PER_SEGMENT && self.next_at <= len + 1e-9;
-                        self.next_at = if cut_short { step_len(&p).max(0.25) } else { self.next_at - len };
+                        self.next_at = if cut_short { step_len(&p, self.step.saturating_sub(1)).max(0.25) } else { self.next_at - len };
                     }
                 }
                 Some(iv) => {
@@ -593,9 +598,11 @@ pub fn base_diameter(b: &BrushSettings, s: &StepInput) -> f32 {
     b.size * f
 }
 
-/// Distance to the next step at `p`: the diameter there times the spacing.
-fn step_len_for(brush: &BrushSettings, p: &StrokePoint) -> f64 {
-    let s = StepInput { point: *p, direction: 0.0, initial_direction: 0.0, step: 0 };
+/// Distance after this dab: its current pre-jitter diameter times the spacing.
+fn step_len_for(brush: &BrushSettings, p: &StrokePoint, step: u64) -> f64 {
+    // The two initial Airbrush dabs share Fade step zero, as in DabBuilder::build_step.
+    let step = if brush.build_up { step.saturating_sub(1) } else { step };
+    let s = StepInput { point: *p, direction: 0.0, initial_direction: 0.0, step };
     let d = base_diameter(brush, &s).max(1.0);
     f64::from(d * brush.spacing.max(0.01)).max(0.5)
 }
@@ -616,7 +623,7 @@ impl DabBuilder {
     }
 
     pub fn step_len(&self, p: &StrokePoint) -> f64 {
-        step_len_for(&self.brush, p)
+        step_len_for(&self.brush, p, 0)
     }
 
     pub fn build(&mut self, s: &StepInput, out: &mut Vec<Dab>) {
@@ -874,7 +881,7 @@ impl DabGenerator {
             // step list (the pixel-grid mode can emit 1e7 steps for one).
             let brush = &*self.step_brush;
             let builder = &mut self.builder;
-            self.walker.push(p, &|q| step_len_for(brush, q), &mut |s| builder.build_step(s, dabs));
+            self.walker.push_indexed(p, &|q, step| step_len_for(brush, q, step), &mut |s| builder.build_step(s, dabs));
             if let (Some(w), Some(db)) = (self.dual_walker.as_mut(), self.dual.as_mut()) {
                 let step = db.step_len(&p);
                 w.push(p, &|_| step, &mut |s| db.build(&s, dual));
@@ -982,7 +989,7 @@ mod streaming_tests {
         for p in sm {
             let p = apply_pose(&builder.brush, p);
             let mut steps = Vec::new();
-            walker.push(p, &|q| builder.step_len(q), &mut |s| steps.push(s));
+            walker.push_indexed(p, &|q, step| step_len_for(&brush, q, step), &mut |s| steps.push(s));
             for s in &steps {
                 builder.build(s, &mut dabs);
             }
